@@ -37,7 +37,12 @@ impl Config {
         let state = local.state.or(home.state);
         let per_page = local.per_page.or(home.per_page).unwrap_or(100);
 
-        Ok(Self { token, repo, state, per_page })
+        Ok(Self {
+            token,
+            repo,
+            state,
+            per_page,
+        })
     }
 }
 

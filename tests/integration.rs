@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use problems99::source::{github_issues::GitHubIssues, Query, Source};
+    use problems99::source::{Query, Source, github_issues::GitHubIssues};
 
     fn token() -> Option<String> {
         std::env::var("GITHUB_TOKEN").ok()
@@ -48,7 +48,10 @@ mod tests {
     fn fetch_one_comment_has_author_and_body() {
         let source = GitHubIssues::new().unwrap();
         let conv = source.fetch_one("schemaorg/schemaorg", 1842).unwrap();
-        let first = conv.comments.first().expect("expected at least one comment");
+        let first = conv
+            .comments
+            .first()
+            .expect("expected at least one comment");
         assert!(first.author.is_some());
         assert!(!first.created_at.is_empty());
     }

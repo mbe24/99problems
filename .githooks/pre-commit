@@ -1,0 +1,22 @@
+#!/bin/sh
+# Pre-commit hook: format check + clippy
+# Install: this file is already at .git/hooks/pre-commit
+# For new clones run: cp .githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -e
+
+echo "→ cargo fmt --check"
+cargo fmt --check || {
+  echo ""
+  echo "  Formatting issues found. Run 'cargo fmt' to fix them, then re-stage."
+  exit 1
+}
+
+echo "→ cargo clippy"
+cargo clippy --no-deps -- -D warnings || {
+  echo ""
+  echo "  Clippy warnings found. Fix them before committing."
+  exit 1
+}
+
+echo "✓ Pre-commit checks passed"
