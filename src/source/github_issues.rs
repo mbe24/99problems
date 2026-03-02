@@ -1,9 +1,13 @@
 use anyhow::{Result, anyhow};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
 
 use super::{Query, Source};
 use crate::model::{Comment, Conversation};
+
+const GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_API_VERSION: &str = "2022-11-28";
+const PAGE_SIZE: u32 = 100;
 
 pub struct GitHubIssues {
     client: Client,
@@ -12,13 +16,19 @@ pub struct GitHubIssues {
 impl GitHubIssues {
     pub fn new() -> Result<Self> {
         let client = Client::builder()
-            .user_agent("99problems-cli/0.1.0")
+            .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self { client })
     }
 
-    fn auth_header(token: &Option<String>) -> Option<String> {
-        token.as_ref().map(|t| format!("Bearer {t}"))
+    /// Adds Authorization + API version headers when a token is present.
+    fn apply_auth(req: RequestBuilder, token: &Option<String>) -> RequestBuilder {
+        match token.as_ref() {
+            Some(t) => req
+                .header("Authorization", format!("Bearer {t}"))
+                .header("X-GitHub-Api-Version", GITHUB_API_VERSION),
+            None => req,
+        }
     }
 
     fn get_pages<T: for<'de> Deserialize<'de>>(
@@ -31,17 +41,11 @@ impl GitHubIssues {
         let mut page = 1u32;
 
         loop {
-            let mut req = self.client.get(url).query(&[
+            let req = self.client.get(url).query(&[
                 ("per_page", per_page.to_string()),
                 ("page", page.to_string()),
             ]);
-
-            if let Some(auth) = Self::auth_header(token) {
-                req = req
-                    .header("Authorization", auth)
-                    .header("X-GitHub-Api-Version", "2022-11-28");
-            }
-
+            let req = Self::apply_auth(req, token);
             let resp = req.send()?;
 
             if !resp.status().is_success() {
@@ -101,24 +105,19 @@ struct UserItem {
 
 impl Source for GitHubIssues {
     fn fetch(&self, query: &Query) -> Result<Vec<Conversation>> {
-        let search_url = "https://api.github.com/search/issues";
+        let search_url = format!("{GITHUB_API_BASE}/search/issues");
         let mut page = 1u32;
         let mut all_issues: Vec<IssueItem> = vec![];
 
         loop {
-            let mut req = self.client.get(search_url).query(&[
+            let req = self.client.get(&search_url).query(&[
                 ("q", query.raw.as_str()),
                 ("per_page", "100"),
                 ("page", &page.to_string()),
             ]);
-
-            if let Some(auth) = Self::auth_header(&query.token) {
-                req = req
-                    .header("Authorization", auth)
-                    .header("X-GitHub-Api-Version", "2022-11-28");
-            }
-
+            let req = Self::apply_auth(req, &query.token);
             let resp = req.send()?;
+
             if !resp.status().is_success() {
                 return Err(anyhow!(
                     "GitHub search error {}: {}",
@@ -128,7 +127,7 @@ impl Source for GitHubIssues {
             }
 
             let search: SearchResponse = resp.json()?;
-            let done = search.items.len() < 100;
+            let done = search.items.len() < PAGE_SIZE as usize;
             all_issues.extend(search.items);
             if done {
                 break;
@@ -144,11 +143,11 @@ impl Source for GitHubIssues {
         let mut conversations = vec![];
         for issue in all_issues {
             let comments_url = format!(
-                "https://api.github.com/repos/{repo}/issues/{}/comments",
+                "{GITHUB_API_BASE}/repos/{repo}/issues/{}/comments",
                 issue.number
             );
             let raw_comments: Vec<CommentItem> =
-                self.get_pages(&comments_url, &query.token, 100)?;
+                self.get_pages(&comments_url, &query.token, PAGE_SIZE)?;
 
             conversations.push(Conversation {
                 id: issue.number,
@@ -170,11 +169,8 @@ impl Source for GitHubIssues {
     }
 
     fn fetch_one(&self, repo: &str, issue_id: u64) -> Result<Conversation> {
-        let issue_url = format!("https://api.github.com/repos/{repo}/issues/{issue_id}");
-        let req = self.client.get(&issue_url);
-        // token is not stored on struct, so we pass None here — callers set it via Query
-        // For fetch_one we skip auth (public repos). Callers who need auth should use fetch().
-        let resp = req.send()?;
+        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
+        let resp = self.client.get(&issue_url).send()?;
         if !resp.status().is_success() {
             return Err(anyhow!(
                 "GitHub issue error {}: {}",
@@ -184,9 +180,8 @@ impl Source for GitHubIssues {
         }
         let issue: IssueItem = resp.json()?;
 
-        let comments_url =
-            format!("https://api.github.com/repos/{repo}/issues/{issue_id}/comments");
-        let raw_comments: Vec<CommentItem> = self.get_pages(&comments_url, &None, 100)?;
+        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}/comments");
+        let raw_comments: Vec<CommentItem> = self.get_pages(&comments_url, &None, PAGE_SIZE)?;
 
         Ok(Conversation {
             id: issue.number,

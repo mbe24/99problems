@@ -17,10 +17,36 @@ enum OutputFormat {
     Yaml,
 }
 
+#[derive(Debug, Clone, ValueEnum, PartialEq)]
+enum Platform {
+    Github,
+    Gitlab,
+    Bitbucket,
+}
+
+impl Platform {
+    fn as_str(&self) -> &str {
+        match self {
+            Platform::Github => "github",
+            Platform::Gitlab => "gitlab",
+            Platform::Bitbucket => "bitbucket",
+        }
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum)]
-enum SourceKind {
-    GithubIssues,
-    GithubPrs,
+enum ContentType {
+    Issue,
+    Pr,
+}
+
+impl ContentType {
+    fn as_str(&self) -> &str {
+        match self {
+            ContentType::Issue => "issue",
+            ContentType::Pr => "pr",
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -30,8 +56,8 @@ enum SourceKind {
     version
 )]
 struct Cli {
-    /// Full GitHub search query (same syntax as the web UI search bar)
-    /// e.g. "is:issue state:closed Event repo:owner/repo"
+    /// Full search query (same syntax as the platform's web UI search bar)
+    /// e.g. "state:closed Event repo:owner/repo"
     #[arg(short = 'q', long)]
     query: Option<String>,
 
@@ -47,13 +73,29 @@ struct Cli {
     #[arg(long)]
     labels: Option<String>,
 
+    /// Filter by issue/PR author
+    #[arg(long)]
+    author: Option<String>,
+
+    /// Only include items created on or after this date (YYYY-MM-DD), e.g. "2024-01-01"
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Filter by milestone title or number
+    #[arg(long)]
+    milestone: Option<String>,
+
     /// Fetch a single issue by number (bypasses search)
     #[arg(long)]
     issue: Option<u64>,
 
-    /// Data source to use
-    #[arg(long, value_enum, default_value = "github-issues")]
-    source: SourceKind,
+    /// Platform to fetch from [default: github]
+    #[arg(long, value_enum)]
+    platform: Option<Platform>,
+
+    /// Content type to fetch [default: issue]
+    #[arg(long = "type", value_enum)]
+    kind: Option<ContentType>,
 
     /// Output format
     #[arg(long, value_enum, default_value = "json")]
@@ -63,7 +105,7 @@ struct Cli {
     #[arg(short = 'o', long)]
     output: Option<String>,
 
-    /// GitHub personal access token (overrides GITHUB_TOKEN and dotfile)
+    /// Personal access token (overrides env var and dotfile)
     #[arg(long)]
     token: Option<String>,
 }
@@ -72,38 +114,48 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut cfg = Config::load()?;
 
-    // CLI token overrides everything
+    // CLI flags override config values
+    if let Some(p) = &cli.platform {
+        cfg.platform = p.as_str().to_owned();
+    }
+    if let Some(k) = &cli.kind {
+        cfg.kind = k.as_str().to_owned();
+    }
     if let Some(t) = cli.token {
         cfg.token = Some(t);
     }
 
-    // Override repo/state from CLI if provided
     let repo = cli.repo.or(cfg.repo.clone());
     let state = cli.state.or(cfg.state.clone());
 
-    // Build the formatter
     let formatter: Box<dyn Formatter> = match cli.format {
         OutputFormat::Json => Box::new(JsonFormatter),
         OutputFormat::Yaml => Box::new(YamlFormatter),
     };
 
-    // Build the source
-    let source: Box<dyn Source> = match cli.source {
-        SourceKind::GithubIssues => Box::new(GitHubIssues::new()?),
-        SourceKind::GithubPrs => {
-            return Err(anyhow!("github-prs source is not yet implemented"));
-        }
+    let source: Box<dyn Source> = match cfg.platform.as_str() {
+        "github" => Box::new(GitHubIssues::new()?),
+        other => return Err(anyhow!("Platform '{other}' is not yet supported")),
     };
 
     let conversations = if let Some(issue_id) = cli.issue {
-        // Single-issue mode
         let r = repo
             .as_deref()
             .ok_or_else(|| anyhow!("--repo is required when using --issue"))?;
         vec![source.fetch_one(r, issue_id)?]
     } else {
-        // Search mode
-        let query = Query::build(cli.query, repo, state, cli.labels, cfg.per_page, cfg.token);
+        let query = Query::build(
+            cli.query,
+            &cfg.kind,
+            repo,
+            state,
+            cli.labels,
+            cli.author,
+            cli.since,
+            cli.milestone,
+            cfg.per_page,
+            cfg.token,
+        );
         if query.raw.trim().is_empty() {
             return Err(anyhow!(
                 "No query specified. Use -q or provide --repo/--state/--labels."

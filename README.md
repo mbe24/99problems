@@ -78,6 +78,7 @@ Each result is a conversation object containing the issue body and all comments:
 Example `~/.99problems`:
 
 ```toml
+[github]
 token = "ghp_your_personal_access_token"
 ```
 
@@ -88,23 +89,37 @@ repo  = "owner/my-repo"
 state = "closed"
 ```
 
-Token is resolved in this order: `--token` flag → `GITHUB_TOKEN` env var → `./.99problems` → `~/.99problems`. Without a token the GitHub API rate limit is 60 requests/hour; with one it's 5,000/hour.
+For self-hosted GitLab:
+
+```toml
+platform = "gitlab"
+
+[gitlab]
+token = "glpat_your_token"
+url   = "https://gitlab.mycompany.com"
+```
+
+Token is resolved in this order: `--token` flag → `GITHUB_TOKEN`/`GITLAB_TOKEN`/`BITBUCKET_TOKEN` env var → `./.99problems` → `~/.99problems`. Without a token the GitHub API rate limit is 60 requests/hour; with one it's 5,000/hour.
 
 ## Options
 
 ```
 Options:
-  -q, --query <QUERY>      Full GitHub search query (web UI syntax)
-      --repo <REPO>        Shorthand for "repo:owner/name"
-      --state <STATE>      Shorthand for "state:open|closed"
-      --labels <LABELS>    Comma-separated labels, e.g. "bug,help wanted"
-      --issue <ISSUE>      Fetch a single issue by number (requires --repo)
-      --source <SOURCE>    Data source [default: github-issues]
-      --format <FORMAT>    Output format: json | yaml [default: json]
-  -o, --output <FILE>      Write to file instead of stdout
-      --token <TOKEN>      GitHub personal access token
-  -h, --help               Print help
-  -V, --version            Print version
+  -q, --query <QUERY>        Full search query (platform web UI syntax)
+      --repo <REPO>          Shorthand for "repo:owner/name"
+      --state <STATE>        Shorthand for "state:open|closed"
+      --labels <LABELS>      Comma-separated labels, e.g. "bug,help wanted"
+      --author <AUTHOR>      Filter by issue/PR author
+      --since <DATE>         Only items created on or after YYYY-MM-DD
+      --milestone <NAME>     Filter by milestone title or number
+      --issue <ISSUE>        Fetch a single issue by number (requires --repo)
+      --platform <PLATFORM>  Platform: github | gitlab | bitbucket [default: github]
+      --type <TYPE>          Content type: issue | pr [default: issue]
+      --format <FORMAT>      Output format: json | yaml [default: json]
+  -o, --output <FILE>        Write to file instead of stdout
+      --token <TOKEN>        Personal access token
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
 
 ## Use cases
