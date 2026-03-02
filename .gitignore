@@ -1,0 +1,29 @@
+# Rust build output
+/target
+
+# Private docs (see docs/npm-publishing.md for publishing guide)
+/docs/npm-publishing.md
+
+# Local config dotfile (may contain tokens)
+.99problems
+
+# Node
+node_modules/
+npm-debug.log*
+
+# npm platform package staging dirs (created by publish.js)
+npm-win32-x64/
+npm-linux-x64/
+npm-linux-arm64/
+npm-darwin-x64/
+npm-darwin-arm64/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

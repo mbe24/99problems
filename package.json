@@ -1,0 +1,23 @@
+{
+  "name": "@mbe24/99problems",
+  "version": "0.1.0",
+  "description": "GitHub issue conversation fetcher CLI",
+  "bin": {
+    "99problems": "./npm/bin/99problems.js"
+  },
+  "scripts": {
+    "postinstall": "node npm/install.js"
+  },
+  "optionalDependencies": {
+    "@mbe24/99problems-win32-x64": "0.1.0",
+    "@mbe24/99problems-linux-x64": "0.1.0",
+    "@mbe24/99problems-darwin-x64": "0.1.0",
+    "@mbe24/99problems-darwin-arm64": "0.1.0",
+    "@mbe24/99problems-linux-arm64": "0.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mbe24/99problems"
+  }
+}
