@@ -15,6 +15,10 @@ Thank you for taking the time to contribute! 🎉
 git clone https://github.com/mbe24/99problems
 cd 99problems
 
+# Install the pre-commit hook (runs cargo fmt + clippy before each commit)
+cp .githooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit  # not needed on Windows
+
 # Build
 cargo build
 

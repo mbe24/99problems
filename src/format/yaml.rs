@@ -1,6 +1,6 @@
-use anyhow::Result;
-use crate::model::Conversation;
 use super::Formatter;
+use crate::model::Conversation;
+use anyhow::Result;
 
 pub struct YamlFormatter;
 

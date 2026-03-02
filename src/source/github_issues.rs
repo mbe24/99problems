@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-use crate::model::{Comment, Conversation};
 use super::{Query, Source};
+use crate::model::{Comment, Conversation};
 
 pub struct GitHubIssues {
     client: Client,
@@ -31,21 +31,29 @@ impl GitHubIssues {
         let mut page = 1u32;
 
         loop {
-            let mut req = self.client.get(url)
-                .query(&[("per_page", per_page.to_string()), ("page", page.to_string())]);
+            let mut req = self.client.get(url).query(&[
+                ("per_page", per_page.to_string()),
+                ("page", page.to_string()),
+            ]);
 
             if let Some(auth) = Self::auth_header(token) {
-                req = req.header("Authorization", auth)
-                         .header("X-GitHub-Api-Version", "2022-11-28");
+                req = req
+                    .header("Authorization", auth)
+                    .header("X-GitHub-Api-Version", "2022-11-28");
             }
 
             let resp = req.send()?;
 
             if !resp.status().is_success() {
-                return Err(anyhow!("GitHub API error {}: {}", resp.status(), resp.text()?));
+                return Err(anyhow!(
+                    "GitHub API error {}: {}",
+                    resp.status(),
+                    resp.text()?
+                ));
             }
 
-            let has_next = resp.headers()
+            let has_next = resp
+                .headers()
                 .get("link")
                 .and_then(|v| v.to_str().ok())
                 .map(|l| l.contains(r#"rel="next""#))
@@ -54,7 +62,9 @@ impl GitHubIssues {
             let items: Vec<T> = resp.json()?;
             let done = items.is_empty() || !has_next;
             results.extend(items);
-            if done { break; }
+            if done {
+                break;
+            }
             page += 1;
         }
 
@@ -96,33 +106,40 @@ impl Source for GitHubIssues {
         let mut all_issues: Vec<IssueItem> = vec![];
 
         loop {
-            let mut req = self.client.get(search_url)
-                .query(&[
-                    ("q", query.raw.as_str()),
-                    ("per_page", "100"),
-                    ("page", &page.to_string()),
-                ]);
+            let mut req = self.client.get(search_url).query(&[
+                ("q", query.raw.as_str()),
+                ("per_page", "100"),
+                ("page", &page.to_string()),
+            ]);
 
             if let Some(auth) = Self::auth_header(&query.token) {
-                req = req.header("Authorization", auth)
-                         .header("X-GitHub-Api-Version", "2022-11-28");
+                req = req
+                    .header("Authorization", auth)
+                    .header("X-GitHub-Api-Version", "2022-11-28");
             }
 
             let resp = req.send()?;
             if !resp.status().is_success() {
-                return Err(anyhow!("GitHub search error {}: {}", resp.status(), resp.text()?));
+                return Err(anyhow!(
+                    "GitHub search error {}: {}",
+                    resp.status(),
+                    resp.text()?
+                ));
             }
 
             let search: SearchResponse = resp.json()?;
             let done = search.items.len() < 100;
             all_issues.extend(search.items);
-            if done { break; }
+            if done {
+                break;
+            }
             page += 1;
         }
 
         // Determine repo from query for comment fetching
-        let repo = extract_repo(&query.raw)
-            .ok_or_else(|| anyhow!("No repo: found in query. Use --repo or include 'repo:owner/name' in -q"))?;
+        let repo = extract_repo(&query.raw).ok_or_else(|| {
+            anyhow!("No repo: found in query. Use --repo or include 'repo:owner/name' in -q")
+        })?;
 
         let mut conversations = vec![];
         for issue in all_issues {
@@ -138,11 +155,14 @@ impl Source for GitHubIssues {
                 title: issue.title,
                 state: issue.state,
                 body: issue.body,
-                comments: raw_comments.into_iter().map(|c| Comment {
-                    author: c.user.map(|u| u.login),
-                    created_at: c.created_at,
-                    body: c.body,
-                }).collect(),
+                comments: raw_comments
+                    .into_iter()
+                    .map(|c| Comment {
+                        author: c.user.map(|u| u.login),
+                        created_at: c.created_at,
+                        body: c.body,
+                    })
+                    .collect(),
             });
         }
 
@@ -156,11 +176,16 @@ impl Source for GitHubIssues {
         // For fetch_one we skip auth (public repos). Callers who need auth should use fetch().
         let resp = req.send()?;
         if !resp.status().is_success() {
-            return Err(anyhow!("GitHub issue error {}: {}", resp.status(), resp.text()?));
+            return Err(anyhow!(
+                "GitHub issue error {}: {}",
+                resp.status(),
+                resp.text()?
+            ));
         }
         let issue: IssueItem = resp.json()?;
 
-        let comments_url = format!("https://api.github.com/repos/{repo}/issues/{issue_id}/comments");
+        let comments_url =
+            format!("https://api.github.com/repos/{repo}/issues/{issue_id}/comments");
         let raw_comments: Vec<CommentItem> = self.get_pages(&comments_url, &None, 100)?;
 
         Ok(Conversation {
@@ -168,18 +193,22 @@ impl Source for GitHubIssues {
             title: issue.title,
             state: issue.state,
             body: issue.body,
-            comments: raw_comments.into_iter().map(|c| Comment {
-                author: c.user.map(|u| u.login),
-                created_at: c.created_at,
-                body: c.body,
-            }).collect(),
+            comments: raw_comments
+                .into_iter()
+                .map(|c| Comment {
+                    author: c.user.map(|u| u.login),
+                    created_at: c.created_at,
+                    body: c.body,
+                })
+                .collect(),
         })
     }
 }
 
 /// Extract `owner/repo` from a query string containing `repo:owner/repo`.
 pub fn extract_repo(query: &str) -> Option<String> {
-    query.split_whitespace()
+    query
+        .split_whitespace()
         .find(|t| t.starts_with("repo:"))
         .map(|t| t.trim_start_matches("repo:").to_string())
 }

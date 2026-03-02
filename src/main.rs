@@ -3,13 +3,13 @@ mod format;
 mod model;
 mod source;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 
 use config::Config;
-use format::{json::JsonFormatter, yaml::YamlFormatter, Formatter};
-use source::{github_issues::GitHubIssues, Query, Source};
+use format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
+use source::{Query, Source, github_issues::GitHubIssues};
 
 #[derive(Debug, Clone, ValueEnum)]
 enum OutputFormat {
@@ -97,13 +97,17 @@ fn main() -> Result<()> {
 
     let conversations = if let Some(issue_id) = cli.issue {
         // Single-issue mode
-        let r = repo.as_deref().ok_or_else(|| anyhow!("--repo is required when using --issue"))?;
+        let r = repo
+            .as_deref()
+            .ok_or_else(|| anyhow!("--repo is required when using --issue"))?;
         vec![source.fetch_one(r, issue_id)?]
     } else {
         // Search mode
         let query = Query::build(cli.query, repo, state, cli.labels, cfg.per_page, cfg.token);
         if query.raw.trim().is_empty() {
-            return Err(anyhow!("No query specified. Use -q or provide --repo/--state/--labels."));
+            return Err(anyhow!(
+                "No query specified. Use -q or provide --repo/--state/--labels."
+            ));
         }
         source.fetch(&query)?
     };

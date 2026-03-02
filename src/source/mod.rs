@@ -36,15 +36,15 @@ impl Query {
             parts.push(r);
         }
 
-        if let Some(repo) = repo {
-            if !parts.iter().any(|p| p.contains("repo:")) {
-                parts.push(format!("repo:{repo}"));
-            }
+        if let Some(repo) = repo
+            && !parts.iter().any(|p| p.contains("repo:"))
+        {
+            parts.push(format!("repo:{repo}"));
         }
-        if let Some(state) = state {
-            if !parts.iter().any(|p| p.contains("state:")) {
-                parts.push(format!("state:{state}"));
-            }
+        if let Some(state) = state
+            && !parts.iter().any(|p| p.contains("state:"))
+        {
+            parts.push(format!("state:{state}"));
         }
         if let Some(labels) = labels {
             for label in labels.split(',') {
@@ -55,7 +55,11 @@ impl Query {
             }
         }
 
-        Query { raw: parts.join(" "), per_page, token }
+        Query {
+            raw: parts.join(" "),
+            per_page,
+            token,
+        }
     }
 }
 
