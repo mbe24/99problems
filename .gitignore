@@ -1,8 +1,9 @@
 # Rust build output
 /target
 
-# Private docs (see docs/npm-publishing.md for publishing guide)
+# Private docs (see docs/ for publishing and deployment guides)
 /docs/npm-publishing.md
+/docs/deployment.md
 
 # Local config dotfile (may contain tokens)
 .99problems
