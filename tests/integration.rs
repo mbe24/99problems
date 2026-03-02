@@ -8,7 +8,12 @@ mod tests {
     use problems99::source::{Query, Source, github_issues::GitHubIssues};
 
     fn token() -> Option<String> {
-        std::env::var("GITHUB_TOKEN").ok()
+        // Prefer env var, fall back to dotfile config (same resolution as the binary)
+        std::env::var("GITHUB_TOKEN").ok().or_else(|| {
+            problems99::config::Config::load()
+                .ok()
+                .and_then(|c| c.token)
+        })
     }
 
     #[test]
@@ -29,6 +34,10 @@ mod tests {
         let source = GitHubIssues::new().unwrap();
         let query = Query::build(
             Some("is:issue state:closed EventSeries repo:schemaorg/schemaorg".into()),
+            "issue",
+            None,
+            None,
+            None,
             None,
             None,
             None,
