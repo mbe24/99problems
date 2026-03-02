@@ -8,7 +8,121 @@
 
 > AI-friendly access to GitHub issues.
 
-Fetch GitHub issue conversations as structured JSON or YAML — ready for LLM pipelines, RAG, and bulk analysis. Uses the same search syntax as the GitHub web UI.
+`99problems` is a command-line tool that fetches GitHub issue conversations — including all comments — and exports them as structured **JSON** or **YAML**. It uses the same search syntax as the GitHub web UI, making it easy to export, analyse, or feed GitHub issues into LLM pipelines, RAG systems, vector stores, and data analysis workflows.
+
+Built in Rust. Distributed as a single binary via npm and crates.io. No runtime dependencies.
+
+## Installation
+
+```bash
+npm install -g @mbe24/99problems
+```
+
+Or via cargo:
+
+```bash
+cargo install problems99
+```
+
+Pre-built binaries are available for Windows x64, Linux x64, Linux ARM64, macOS Intel, and macOS Apple Silicon.
+
+## Usage
+
+```bash
+# Export all closed issues mentioning "Event" to JSON
+99problems -q "is:issue state:closed Event repo:schemaorg/schemaorg" -o output.json
+
+# Fetch a single issue with all its comments
+99problems --repo schemaorg/schemaorg --issue 1842
+
+# Export open bug issues as YAML
+99problems -q "state:open label:bug repo:owner/repo" --format yaml
+
+# Pipe into jq for further processing
+99problems -q "state:closed repo:owner/repo" | jq '.[].title'
+```
+
+## Output
+
+Each result is a conversation object containing the issue body and all comments:
+
+```json
+[
+  {
+    "id": 1842,
+    "title": "Event schema improvements",
+    "body": "Issue body text...",
+    "url": "https://github.com/schemaorg/schemaorg/issues/1842",
+    "state": "closed",
+    "created_at": "2019-04-01T12:00:00Z",
+    "comments": [
+      {
+        "author": "octocat",
+        "body": "Comment text...",
+        "created_at": "2019-04-02T08:00:00Z"
+      }
+    ]
+  }
+]
+```
+
+## Configuration
+
+`99problems` reads TOML dotfiles so you don't have to repeat flags on every run.
+
+| File | Purpose |
+|---|---|
+| `~/.99problems` | Global defaults (token, preferred repo, etc.) |
+| `./.99problems` | Per-project overrides |
+
+Example `~/.99problems`:
+
+```toml
+token = "ghp_your_personal_access_token"
+```
+
+Example `./.99problems` in a project directory:
+
+```toml
+repo  = "owner/my-repo"
+state = "closed"
+```
+
+Token is resolved in this order: `--token` flag → `GITHUB_TOKEN` env var → `./.99problems` → `~/.99problems`. Without a token the GitHub API rate limit is 60 requests/hour; with one it's 5,000/hour.
+
+## Options
+
+```
+Options:
+  -q, --query <QUERY>      Full GitHub search query (web UI syntax)
+      --repo <REPO>        Shorthand for "repo:owner/name"
+      --state <STATE>      Shorthand for "state:open|closed"
+      --labels <LABELS>    Comma-separated labels, e.g. "bug,help wanted"
+      --issue <ISSUE>      Fetch a single issue by number (requires --repo)
+      --source <SOURCE>    Data source [default: github-issues]
+      --format <FORMAT>    Output format: json | yaml [default: json]
+  -o, --output <FILE>      Write to file instead of stdout
+      --token <TOKEN>      GitHub personal access token
+  -h, --help               Print help
+  -V, --version            Print version
+```
+
+## Use cases
+
+- **LLM context / RAG** — export issue history into a vector store or use as prompt context
+- **Issue triage and analysis** — bulk-process GitHub issues with Python, JavaScript, or any data tool
+- **Training data generation** — build labelled datasets from GitHub discussions and bug reports
+- **Changelog and release notes** — extract closed issues for automated release documentation
+- **Knowledge base indexing** — crawl project issue trackers for search and retrieval systems
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+See [LICENSE](LICENSE).
+
 
 
 
