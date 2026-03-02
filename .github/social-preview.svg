@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F0720"/>
+      <stop offset="100%" stop-color="#1C0B38"/>
+    </linearGradient>
+    <radialGradient id="logoglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- Decorative circles -->
+  <circle cx="1220" cy="60"  r="320" fill="#6D28D9" opacity="0.07"/>
+  <circle cx="60"  cy="610" r="220" fill="#5B21B6" opacity="0.07"/>
+
+  <!-- Soft glow behind logo -->
+  <ellipse cx="220" cy="320" rx="240" ry="240" fill="url(#logoglow)"/>
+
+  <!-- Logo mark -->
+  <rect x="70" y="180" width="300" height="300" rx="44" fill="#6D28D9"/>
+  <text
+    x="220" y="372"
+    font-family="'Segoe UI', Arial, sans-serif"
+    font-size="160" font-weight="900"
+    text-anchor="middle" fill="#FFFFFF"
+    letter-spacing="-8">9P</text>
+
+  <!-- Vertical divider -->
+  <line x1="440" y1="100" x2="440" y2="540" stroke="#6D28D9" stroke-width="1" opacity="0.35"/>
+
+  <!-- Title -->
+  <text
+    x="472" y="234"
+    font-family="'Segoe UI', Arial, sans-serif"
+    font-size="86" font-weight="800"
+    fill="#FFFFFF" letter-spacing="-3">99problems</text>
+
+  <!-- Tagline -->
+  <text
+    x="474" y="282"
+    font-family="'Segoe UI', Arial, sans-serif"
+    font-size="28" font-weight="400"
+    fill="#A78BFA">AI-friendly access to GitHub issues</text>
+
+  <!-- Feature pills -->
+  <rect x="474" y="306" width="116" height="30" rx="6" fill="#2D1260"/>
+  <text x="532" y="326" font-family="'Segoe UI', Arial, sans-serif" font-size="14" text-anchor="middle" fill="#C4B5FD">JSON · YAML</text>
+
+  <rect x="600" y="306" width="116" height="30" rx="6" fill="#2D1260"/>
+  <text x="658" y="326" font-family="'Segoe UI', Arial, sans-serif" font-size="14" text-anchor="middle" fill="#C4B5FD">5 platforms</text>
+
+  <rect x="726" y="306" width="186" height="30" rx="6" fill="#2D1260"/>
+  <text x="819" y="326" font-family="'Segoe UI', Arial, sans-serif" font-size="14" text-anchor="middle" fill="#C4B5FD">GitHub search syntax</text>
+
+  <!-- Terminal window -->
+  <rect x="472" y="352" width="762" height="216" rx="12" fill="#0D0520" stroke="#3B1D7A" stroke-width="1.5"/>
+
+  <!-- Terminal chrome bar -->
+  <rect x="472" y="352" width="762" height="36" rx="12" fill="#1A0A38"/>
+  <rect x="472" y="370" width="762" height="18" fill="#1A0A38"/>
+  <circle cx="502" cy="370" r="7" fill="#FF5F57"/>
+  <circle cx="526" cy="370" r="7" fill="#FFBD2E"/>
+  <circle cx="550" cy="370" r="7" fill="#28C840"/>
+  <text x="760" y="375" font-family="'Segoe UI', Arial, sans-serif" font-size="13" text-anchor="middle" fill="#6B4FA0">zsh</text>
+
+  <!-- Install line -->
+  <text x="496" y="418" font-family="'Courier New', monospace" font-size="17" fill="#6D28D9">$</text>
+  <text x="514" y="418" font-family="'Courier New', monospace" font-size="17" fill="#94A3B8"> npm install -g @mbe24/99problems</text>
+
+  <!-- Command line -->
+  <text x="496" y="458" font-family="'Courier New', monospace" font-size="17" fill="#6D28D9">$</text>
+  <text x="514" y="458" font-family="'Courier New', monospace" font-size="17" fill="#E2E8F0"> 99problems -q </text>
+  <text x="672" y="458" font-family="'Courier New', monospace" font-size="17" fill="#86EFAC">"state:closed repo:owner/repo"</text>
+  <text x="514" y="482" font-family="'Courier New', monospace" font-size="17" fill="#E2E8F0">   -o conversations.json</text>
+
+  <!-- Output line -->
+  <text x="496" y="524" font-family="'Courier New', monospace" font-size="17" fill="#34D399">✓ Wrote 262 conversations to conversations.json</text>
+</svg>
