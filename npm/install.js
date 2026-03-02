@@ -19,7 +19,7 @@ if (!pkg) {
 }
 
 try {
-  require.resolve(`${pkg}/99problems${process.platform === "win32" ? ".exe" : ""}`);
+  require.resolve(`${pkg}/bin/99problems${process.platform === "win32" ? ".exe" : ""}`);
   console.log(`[99problems] Binary found for ${key}.`);
 } catch {
   console.warn(`[99problems] Optional dependency ${pkg} not installed (this is OK if you're building from source).`);
