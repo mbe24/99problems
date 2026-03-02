@@ -1,6 +1,6 @@
 {
   "name": "@mbe24/99problems",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitHub issue conversation fetcher CLI",
   "bin": {
     "99problems": "./npm/bin/99problems.js"

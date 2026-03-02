@@ -24,7 +24,7 @@ const binaryName = process.platform === "win32" ? "99problems.exe" : "99problems
 
 let binaryPath;
 try {
-  binaryPath = require.resolve(`${pkg}/${binaryName}`);
+  binaryPath = require.resolve(`${pkg}/bin/${binaryName}`);
 } catch {
   // Fallback: look for binary placed by install.js next to this shim
   binaryPath = path.join(__dirname, binaryName);
