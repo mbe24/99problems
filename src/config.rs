@@ -63,9 +63,15 @@ impl Config {
         let state = local.state.clone().or(home.state.clone());
         let per_page = local.per_page.or(home.per_page).unwrap_or(100);
 
-        // Resolve token for the active platform:
-        // env var → local platform section → home platform section → legacy flat token
-        let (token, platform_url) = resolve_platform_token(&platform, &local, &home);
+        // Resolve token: env var → local dotfile → home dotfile
+        let env_var = match platform.as_str() {
+            "github" => "GITHUB_TOKEN",
+            "gitlab" => "GITLAB_TOKEN",
+            "bitbucket" => "BITBUCKET_TOKEN",
+            _ => "GITHUB_TOKEN",
+        };
+        let (dotfile_token, platform_url) = resolve_platform_token(&platform, &local, &home);
+        let token = std::env::var(env_var).ok().or(dotfile_token);
 
         Ok(Self {
             platform,
@@ -79,26 +85,18 @@ impl Config {
     }
 }
 
-/// Resolve token and optional URL for the given platform from both dotfiles and env vars.
+/// Resolve token and optional URL for the given platform from dotfiles only.
 fn resolve_platform_token(
     platform: &str,
     local: &DotfileConfig,
     home: &DotfileConfig,
 ) -> (Option<String>, Option<String>) {
-    let env_var = match platform {
-        "github" => "GITHUB_TOKEN",
-        "gitlab" => "GITLAB_TOKEN",
-        "bitbucket" => "BITBUCKET_TOKEN",
-        _ => "GITHUB_TOKEN",
-    };
-
-    let env_token = std::env::var(env_var).ok();
-
     let local_platform = platform_section(platform, local);
     let home_platform = platform_section(platform, home);
 
-    let token = env_token
-        .or_else(|| local_platform.as_ref().and_then(|p| p.token.clone()))
+    let token = local_platform
+        .as_ref()
+        .and_then(|p| p.token.clone())
         .or_else(|| home_platform.as_ref().and_then(|p| p.token.clone()));
 
     let url = local_platform
