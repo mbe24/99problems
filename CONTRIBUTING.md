@@ -11,7 +11,7 @@ Thank you for taking the time to contribute! 🎉
 ## Development setup
 
 ```bash
-# Prerequisites: Rust stable (1.85+), cargo
+# Prerequisites: rustup + cargo (toolchain configured by rust-toolchain.toml)
 git clone https://github.com/mbe24/99problems
 cd 99problems
 
