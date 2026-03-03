@@ -25,6 +25,10 @@ mod tests {
                 author: Some("user1".into()),
                 created_at: "2024-01-01T00:00:00Z".into(),
                 body: Some("A comment".into()),
+                kind: None,
+                review_path: None,
+                review_line: None,
+                review_side: None,
             }],
         }]
     }

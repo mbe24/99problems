@@ -32,8 +32,11 @@ Pre-built binaries are available for Windows x64, Linux x64, Linux ARM64, macOS 
 # Export all closed issues mentioning "Event" to JSON
 99problems -q "is:issue state:closed Event repo:schemaorg/schemaorg" -o output.json
 
-# Fetch a single issue with all its comments
-99problems --repo schemaorg/schemaorg --issue 1842
+# Fetch a single issue/PR with all its comments
+99problems --repo schemaorg/schemaorg --id 1842
+
+# Fetch a PR including inline review comments
+99problems --repo github/gitignore --id 2402 --include-review-comments
 
 # Export open bug issues as YAML
 99problems -q "state:open label:bug repo:owner/repo" --format yaml
@@ -112,15 +115,41 @@ Options:
       --author <AUTHOR>      Filter by issue/PR author
       --since <DATE>         Only items created on or after YYYY-MM-DD
       --milestone <NAME>     Filter by milestone title or number
-      --issue <ISSUE>        Fetch a single issue by number (requires --repo)
+      --id <ID>              Fetch a single issue/PR by number (requires --repo)
+                             Alias: --issue
       --platform <PLATFORM>  Platform: github | gitlab | bitbucket [default: github]
       --type <TYPE>          Content type: issue | pr [default: issue]
+                             In --id mode: defaults to issue; explicit --type disables fallback
+      --include-review-comments
+                             Include pull request review comments (GitHub PRs)
+      --completions <COMPLETIONS>
+                             Generate shell completion script and print it to stdout
+                             [possible values: bash, zsh, fish, powershell, elvish]
       --format <FORMAT>      Output format: json | yaml [default: json]
   -o, --output <FILE>        Write to file instead of stdout
       --token <TOKEN>        Personal access token
   -h, --help                 Print help
   -V, --version              Print version
 ```
+
+## Shell completion
+
+Generate a completion script and source/install it in your shell.
+
+```bash
+# If installed via cargo/npm globally:
+99problems --completions bash
+
+# Via cargo without installing:
+cargo run -- --completions powershell
+
+# Via npm package:
+npx @mbe24/99problems --completions zsh
+```
+
+When installed via npm, postinstall will try to auto-install completions for
+`bash`, `zsh`, and `fish` (best effort), and print a message if shell detection
+or auto-install is not possible.
 
 ## Use cases
 

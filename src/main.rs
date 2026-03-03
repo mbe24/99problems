@@ -4,12 +4,13 @@ mod model;
 mod source;
 
 use anyhow::{Result, anyhow};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
+use clap_complete::{Generator, Shell, generate};
 use std::io::Write;
 
 use config::Config;
 use format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
-use source::{Query, Source, github_issues::GitHubIssues};
+use source::{ContentKind, FetchRequest, FetchTarget, Query, Source, github_issues::GitHubIssues};
 
 #[derive(Debug, Clone, ValueEnum)]
 enum OutputFormat {
@@ -45,6 +46,27 @@ impl ContentType {
         match self {
             ContentType::Issue => "issue",
             ContentType::Pr => "pr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+    Elvish,
+}
+
+impl CompletionShell {
+    fn as_clap_shell(&self) -> Shell {
+        match self {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Zsh => Shell::Zsh,
+            CompletionShell::Fish => Shell::Fish,
+            CompletionShell::Powershell => Shell::PowerShell,
+            CompletionShell::Elvish => Shell::Elvish,
         }
     }
 }
@@ -85,9 +107,9 @@ struct Cli {
     #[arg(long)]
     milestone: Option<String>,
 
-    /// Fetch a single issue by number (bypasses search)
-    #[arg(long)]
-    issue: Option<u64>,
+    /// Fetch a single issue/PR by number (bypasses search)
+    #[arg(long = "id", visible_alias = "issue")]
+    id: Option<u64>,
 
     /// Platform to fetch from [default: github]
     #[arg(long, value_enum)]
@@ -101,6 +123,10 @@ struct Cli {
     #[arg(long, value_enum, default_value = "json")]
     format: OutputFormat,
 
+    /// Include pull request review comments (inline code comments)
+    #[arg(long)]
+    include_review_comments: bool,
+
     /// Write output to a file (default: stdout)
     #[arg(short = 'o', long)]
     output: Option<String>,
@@ -108,10 +134,19 @@ struct Cli {
     /// Personal access token (overrides env var and dotfile)
     #[arg(long)]
     token: Option<String>,
+
+    /// Generate shell completion script and print it to stdout
+    #[arg(long, value_enum)]
+    completions: Option<CompletionShell>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(shell) = &cli.completions {
+        let shell = shell.as_clap_shell();
+        print_completions(shell, &mut std::io::stdout());
+        return Ok(());
+    }
     let mut cfg = Config::load()?;
 
     // CLI flags override config values
@@ -125,8 +160,8 @@ fn main() -> Result<()> {
         cfg.token = Some(t);
     }
 
-    let repo = cli.repo.or(cfg.repo.clone());
-    let state = cli.state.or(cfg.state.clone());
+    let repo = cli.repo.clone().or(cfg.repo.clone());
+    let state = cli.state.clone().or(cfg.state.clone());
 
     let formatter: Box<dyn Formatter> = match cli.format {
         OutputFormat::Json => Box::new(JsonFormatter),
@@ -138,30 +173,82 @@ fn main() -> Result<()> {
         other => return Err(anyhow!("Platform '{other}' is not yet supported")),
     };
 
-    let conversations = if let Some(issue_id) = cli.issue {
+    let conversations = if let Some(id) = cli.id {
+        let mut ignored_flags = Vec::new();
+        if cli.query.is_some() {
+            ignored_flags.push("--query");
+        }
+        if cli.state.is_some() {
+            ignored_flags.push("--state");
+        }
+        if cli.labels.is_some() {
+            ignored_flags.push("--labels");
+        }
+        if cli.author.is_some() {
+            ignored_flags.push("--author");
+        }
+        if cli.since.is_some() {
+            ignored_flags.push("--since");
+        }
+        if cli.milestone.is_some() {
+            ignored_flags.push("--milestone");
+        }
+        if !ignored_flags.is_empty() {
+            eprintln!(
+                "Warning: when using --id/--issue, these flags are ignored: {}",
+                ignored_flags.join(", ")
+            );
+        }
+
+        let id_kind = if cfg.kind == "pr" {
+            ContentKind::Pr
+        } else {
+            ContentKind::Issue
+        };
+        let kind_explicit = cli.kind.is_some() || cfg.kind == "pr";
+
         let r = repo
             .as_deref()
-            .ok_or_else(|| anyhow!("--repo is required when using --issue"))?;
-        vec![source.fetch_one(r, issue_id)?]
+            .ok_or_else(|| anyhow!("--repo is required when using --id/--issue"))?;
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: r.to_string(),
+                id,
+                kind: id_kind,
+                allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
+            },
+            per_page: cfg.per_page,
+            token: cfg.token.clone(),
+            include_review_comments: cli.include_review_comments,
+        };
+        source.fetch(&req)?
     } else {
         let query = Query::build(
-            cli.query,
+            cli.query.clone(),
             &cfg.kind,
             repo,
             state,
-            cli.labels,
-            cli.author,
-            cli.since,
-            cli.milestone,
+            cli.labels.clone(),
+            cli.author.clone(),
+            cli.since.clone(),
+            cli.milestone.clone(),
             cfg.per_page,
-            cfg.token,
+            cfg.token.clone(),
         );
         if query.raw.trim().is_empty() {
             return Err(anyhow!(
                 "No query specified. Use -q or provide --repo/--state/--labels."
             ));
         }
-        source.fetch(&query)?
+        let req = FetchRequest {
+            target: FetchTarget::Search {
+                raw_query: query.raw,
+            },
+            per_page: query.per_page,
+            token: query.token,
+            include_review_comments: cli.include_review_comments,
+        };
+        source.fetch(&req)?
     };
 
     let output = formatter.format(&conversations)?;
@@ -176,4 +263,10 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_completions<G: Generator>(generator: G, out: &mut dyn Write) {
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    generate(generator, &mut cmd, name, out);
 }
