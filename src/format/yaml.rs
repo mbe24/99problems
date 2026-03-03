@@ -25,6 +25,10 @@ mod tests {
                 author: None,
                 created_at: "2024-06-01T12:00:00Z".into(),
                 body: Some("comment".into()),
+                kind: None,
+                review_path: None,
+                review_line: None,
+                review_side: None,
             }],
         }]
     }

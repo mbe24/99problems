@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
 
-use super::{Query, Source};
+use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::model::{Comment, Conversation};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -31,6 +31,10 @@ impl GitHubIssues {
         }
     }
 
+    fn bounded_per_page(per_page: u32) -> u32 {
+        per_page.clamp(1, PAGE_SIZE)
+    }
+
     fn get_pages<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
@@ -39,6 +43,7 @@ impl GitHubIssues {
     ) -> Result<Vec<T>> {
         let mut results = vec![];
         let mut page = 1u32;
+        let per_page = Self::bounded_per_page(per_page);
 
         loop {
             let req = self.client.get(url).query(&[
@@ -74,49 +79,66 @@ impl GitHubIssues {
 
         Ok(results)
     }
-}
 
-// --- GitHub API response shapes ---
+    fn fetch_issue_comments(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<Vec<Comment>> {
+        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/comments");
+        let raw_comments: Vec<IssueCommentItem> =
+            self.get_pages(&comments_url, &req.token, req.per_page)?;
+        Ok(raw_comments.into_iter().map(map_issue_comment).collect())
+    }
 
-#[derive(Deserialize)]
-struct SearchResponse {
-    items: Vec<IssueItem>,
-}
+    fn fetch_review_comments(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<Vec<Comment>> {
+        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{id}/comments");
+        let raw_comments: Vec<ReviewCommentItem> =
+            self.get_pages(&comments_url, &req.token, req.per_page)?;
+        Ok(raw_comments.into_iter().map(map_review_comment).collect())
+    }
 
-#[derive(Deserialize)]
-struct IssueItem {
-    number: u64,
-    title: String,
-    state: String,
-    body: Option<String>,
-}
+    fn fetch_conversation(
+        &self,
+        repo: &str,
+        item: ConversationSeed,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
+        let mut comments = self.fetch_issue_comments(repo, item.id, req)?;
+        if item.is_pr && req.include_review_comments {
+            comments.extend(self.fetch_review_comments(repo, item.id, req)?);
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        }
 
-#[derive(Deserialize)]
-struct CommentItem {
-    user: Option<UserItem>,
-    created_at: String,
-    body: Option<String>,
-}
+        Ok(Conversation {
+            id: item.id,
+            title: item.title,
+            state: item.state,
+            body: item.body,
+            comments,
+        })
+    }
 
-#[derive(Deserialize)]
-struct UserItem {
-    login: String,
-}
-
-impl Source for GitHubIssues {
-    fn fetch(&self, query: &Query) -> Result<Vec<Conversation>> {
+    fn search(&self, req: &FetchRequest, raw_query: &str) -> Result<Vec<Conversation>> {
         let search_url = format!("{GITHUB_API_BASE}/search/issues");
         let mut page = 1u32;
-        let mut all_issues: Vec<IssueItem> = vec![];
+        let mut all_items: Vec<SearchItem> = vec![];
+        let per_page = Self::bounded_per_page(req.per_page);
 
         loop {
-            let req = self.client.get(&search_url).query(&[
-                ("q", query.raw.as_str()),
-                ("per_page", "100"),
+            let req_http = self.client.get(&search_url).query(&[
+                ("q", raw_query),
+                ("per_page", &per_page.to_string()),
                 ("page", &page.to_string()),
             ]);
-            let req = Self::apply_auth(req, &query.token);
-            let resp = req.send()?;
+            let req_http = Self::apply_auth(req_http, &req.token);
+            let resp = req_http.send()?;
 
             if !resp.status().is_success() {
                 return Err(anyhow!(
@@ -127,50 +149,56 @@ impl Source for GitHubIssues {
             }
 
             let search: SearchResponse = resp.json()?;
-            let done = search.items.len() < PAGE_SIZE as usize;
-            all_issues.extend(search.items);
+            let done = search.items.len() < per_page as usize;
+            all_items.extend(search.items);
             if done {
                 break;
             }
             page += 1;
         }
 
-        // Determine repo from query for comment fetching
-        let repo = extract_repo(&query.raw).ok_or_else(|| {
-            anyhow!("No repo: found in query. Use --repo or include 'repo:owner/name' in -q")
-        })?;
+        let repo_from_query = extract_repo(raw_query);
+        all_items
+            .into_iter()
+            .map(|item| {
+                let repo = item
+                    .repository_url
+                    .as_deref()
+                    .and_then(repo_from_repository_url)
+                    .or_else(|| repo_from_query.clone())
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Could not determine repo for item #{}. Include repo:owner/name in query.",
+                            item.number
+                        )
+                    })?;
 
-        let mut conversations = vec![];
-        for issue in all_issues {
-            let comments_url = format!(
-                "{GITHUB_API_BASE}/repos/{repo}/issues/{}/comments",
-                issue.number
-            );
-            let raw_comments: Vec<CommentItem> =
-                self.get_pages(&comments_url, &query.token, PAGE_SIZE)?;
-
-            conversations.push(Conversation {
-                id: issue.number,
-                title: issue.title,
-                state: issue.state,
-                body: issue.body,
-                comments: raw_comments
-                    .into_iter()
-                    .map(|c| Comment {
-                        author: c.user.map(|u| u.login),
-                        created_at: c.created_at,
-                        body: c.body,
-                    })
-                    .collect(),
-            });
-        }
-
-        Ok(conversations)
+                self.fetch_conversation(
+                    &repo,
+                    ConversationSeed {
+                        id: item.number,
+                        title: item.title,
+                        state: item.state,
+                        body: item.body,
+                        is_pr: item.pull_request.is_some(),
+                    },
+                    req,
+                )
+            })
+            .collect()
     }
 
-    fn fetch_one(&self, repo: &str, issue_id: u64) -> Result<Conversation> {
-        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
-        let resp = self.client.get(&issue_url).send()?;
+    fn fetch_by_id(
+        &self,
+        req: &FetchRequest,
+        repo: &str,
+        id: u64,
+        kind: ContentKind,
+        allow_fallback_to_pr: bool,
+    ) -> Result<Vec<Conversation>> {
+        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}");
+        let request = Self::apply_auth(self.client.get(&issue_url), &req.token);
+        let resp = request.send()?;
         if !resp.status().is_success() {
             return Err(anyhow!(
                 "GitHub issue error {}: {}",
@@ -179,24 +207,135 @@ impl Source for GitHubIssues {
             ));
         }
         let issue: IssueItem = resp.json()?;
+        let is_pr = issue.pull_request.is_some();
 
-        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}/comments");
-        let raw_comments: Vec<CommentItem> = self.get_pages(&comments_url, &None, PAGE_SIZE)?;
+        match kind {
+            ContentKind::Issue if is_pr && !allow_fallback_to_pr => {
+                return Err(anyhow!(
+                    "ID {id} in repo {repo} is a pull request. Use --type pr or omit --type."
+                ));
+            }
+            ContentKind::Issue if is_pr && allow_fallback_to_pr => {
+                eprintln!(
+                    "Warning: --id defaulted to issue, but found PR #{id}; use --type pr for clarity."
+                );
+            }
+            ContentKind::Pr if !is_pr => {
+                return Err(anyhow!(
+                    "ID {id} in repo {repo} is an issue, not a pull request."
+                ));
+            }
+            _ => {}
+        }
 
-        Ok(Conversation {
-            id: issue.number,
-            title: issue.title,
-            state: issue.state,
-            body: issue.body,
-            comments: raw_comments
-                .into_iter()
-                .map(|c| Comment {
-                    author: c.user.map(|u| u.login),
-                    created_at: c.created_at,
-                    body: c.body,
-                })
-                .collect(),
-        })
+        Ok(vec![self.fetch_conversation(
+            repo,
+            ConversationSeed {
+                id: issue.number,
+                title: issue.title,
+                state: issue.state,
+                body: issue.body,
+                is_pr,
+            },
+            req,
+        )?])
+    }
+}
+
+impl Source for GitHubIssues {
+    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+        match &req.target {
+            FetchTarget::Search { raw_query } => self.search(req, raw_query),
+            FetchTarget::Id {
+                repo,
+                id,
+                kind,
+                allow_fallback_to_pr,
+            } => self.fetch_by_id(req, repo, *id, *kind, *allow_fallback_to_pr),
+        }
+    }
+}
+
+// --- GitHub API response shapes ---
+
+#[derive(Deserialize)]
+struct SearchResponse {
+    items: Vec<SearchItem>,
+}
+
+#[derive(Deserialize)]
+struct SearchItem {
+    number: u64,
+    title: String,
+    state: String,
+    body: Option<String>,
+    repository_url: Option<String>,
+    pull_request: Option<PullRequestMarker>,
+}
+
+#[derive(Deserialize)]
+struct IssueItem {
+    number: u64,
+    title: String,
+    state: String,
+    body: Option<String>,
+    pull_request: Option<PullRequestMarker>,
+}
+
+#[derive(Deserialize)]
+struct PullRequestMarker {}
+
+#[derive(Deserialize)]
+struct IssueCommentItem {
+    user: Option<UserItem>,
+    created_at: String,
+    body: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviewCommentItem {
+    user: Option<UserItem>,
+    created_at: String,
+    body: Option<String>,
+    path: Option<String>,
+    line: Option<u64>,
+    side: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UserItem {
+    login: String,
+}
+
+struct ConversationSeed {
+    id: u64,
+    title: String,
+    state: String,
+    body: Option<String>,
+    is_pr: bool,
+}
+
+fn map_issue_comment(c: IssueCommentItem) -> Comment {
+    Comment {
+        author: c.user.map(|u| u.login),
+        created_at: c.created_at,
+        body: c.body,
+        kind: Some("issue_comment".into()),
+        review_path: None,
+        review_line: None,
+        review_side: None,
+    }
+}
+
+fn map_review_comment(c: ReviewCommentItem) -> Comment {
+    Comment {
+        author: c.user.map(|u| u.login),
+        created_at: c.created_at,
+        body: c.body,
+        kind: Some("review_comment".into()),
+        review_path: c.path,
+        review_line: c.line,
+        review_side: c.side,
     }
 }
 
@@ -206,6 +345,11 @@ pub fn extract_repo(query: &str) -> Option<String> {
         .split_whitespace()
         .find(|t| t.starts_with("repo:"))
         .map(|t| t.trim_start_matches("repo:").to_string())
+}
+
+fn repo_from_repository_url(url: &str) -> Option<String> {
+    let prefix = format!("{GITHUB_API_BASE}/repos/");
+    url.strip_prefix(&prefix).map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -223,5 +367,21 @@ mod tests {
     #[test]
     fn extract_repo_returns_none_when_absent() {
         assert_eq!(extract_repo("is:issue state:closed Event"), None);
+    }
+
+    #[test]
+    fn repo_from_repository_url_parses_repo() {
+        assert_eq!(
+            repo_from_repository_url("https://api.github.com/repos/owner/repo"),
+            Some("owner/repo".into())
+        );
+    }
+
+    #[test]
+    fn repo_from_repository_url_returns_none_for_non_github_api_url() {
+        assert_eq!(
+            repo_from_repository_url("https://example.com/repos/owner/repo"),
+            None
+        );
     }
 }

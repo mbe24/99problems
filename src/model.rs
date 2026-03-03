@@ -14,4 +14,12 @@ pub struct Comment {
     pub author: Option<String>,
     pub created_at: String,
     pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_side: Option<String>,
 }

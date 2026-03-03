@@ -5,8 +5,34 @@ pub mod github_issues;
 
 /// A pluggable data source that fetches issue conversations.
 pub trait Source {
-    fn fetch(&self, query: &Query) -> Result<Vec<Conversation>>;
-    fn fetch_one(&self, repo: &str, issue_id: u64) -> Result<Conversation>;
+    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    Issue,
+    Pr,
+}
+
+#[derive(Debug, Clone)]
+pub enum FetchTarget {
+    Search {
+        raw_query: String,
+    },
+    Id {
+        repo: String,
+        id: u64,
+        kind: ContentKind,
+        allow_fallback_to_pr: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchRequest {
+    pub target: FetchTarget,
+    pub per_page: u32,
+    pub token: Option<String>,
+    pub include_review_comments: bool,
 }
 
 /// Parsed search parameters passed to a Source.
