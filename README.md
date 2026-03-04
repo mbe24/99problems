@@ -41,6 +41,9 @@ Pre-built binaries are available for Windows x64, Linux x64, Linux ARM64, macOS 
 # Fetch a GitLab issue
 99problems get --platform gitlab --repo veloren/veloren --id 6
 
+# Fetch using a configured instance alias
+99problems get --instance work-gitlab --id 46 --type pr
+
 # Fetch a Jira issue by key
 99problems get --platform jira --id CLOUD-12817
 
@@ -84,41 +87,41 @@ Each result is a conversation object containing the issue body and all comments:
 
 | File | Purpose |
 |---|---|
-| `~/.99problems` | Global defaults (token, preferred repo, etc.) |
-| `./.99problems` | Per-project overrides |
+| `~/.99problems` | Global instances |
+| `./.99problems` | Per-project instance overrides |
 
-Example `~/.99problems`:
+The runtime config is instance-only:
 
 ```toml
-[github]
+default_instance = "work-gitlab"
+
+[instances.github]
+platform = "github"
+repo = "owner/repo"
 token = "ghp_your_personal_access_token"
-```
 
-Example `./.99problems` in a project directory:
-
-```toml
-repo  = "owner/my-repo"
-state = "closed"
-```
-
-For self-hosted GitLab:
-
-```toml
+[instances.work-gitlab]
 platform = "gitlab"
-
-[gitlab]
+url = "https://gitlab.mycompany.com"
+repo = "group/project"
 token = "glpat_your_token"
-url   = "https://gitlab.mycompany.com"
 
-[jira]
+[instances.work-jira]
+platform = "jira"
+url = "https://jira.mycompany.com"
+repo = "CPQ"
 token = "atlassian_api_token"
 email = "user@example.com"
-# Optional for self-hosted Jira:
-# url = "https://jira.mycompany.com"
 ```
 
-Token is resolved in this order: `--token` flag → `GITHUB_TOKEN`/`GITLAB_TOKEN`/`JIRA_TOKEN`/`BITBUCKET_TOKEN` env var → `./.99problems` → `~/.99problems`.  
-For Jira Atlassian Cloud API tokens, also provide an email via `--jira-email`, `JIRA_EMAIL`, or `[jira].email` (or pass `--token` as `email:api_token`).
+Selection order: `--instance` → single configured instance (auto) → `default_instance`.  
+If multiple instances are configured and neither `--instance` nor `default_instance` is set, the command errors.
+If no instances are configured, `99problems` still works in CLI-only mode (`--platform`, `--url`, `--token`, etc.).
+
+Token is resolved in this order: `--token` flag → `GITHUB_TOKEN`/`GITLAB_TOKEN`/`JIRA_TOKEN`/`BITBUCKET_TOKEN` env var → selected instance token in dotfile.  
+For Jira Atlassian Cloud API tokens, also provide an email via `--jira-email`, `JIRA_EMAIL`, or `[instances.<alias>].email` (or pass `--token` as `email:api_token`).
+
+Legacy sections (`[github]`, `[gitlab]`, `[jira]`, `[bitbucket]`) and top-level runtime keys (`platform`, `repo`, `state`, `type`, `per_page`) are not supported.
 
 ## Commands
 
@@ -147,7 +150,9 @@ Options:
   -m, --milestone <NAME>     Filter by milestone title or number
   -i, --id <ID>              Fetch a single issue/PR by identifier
                              Alias: --issue
-  -p, --platform <PLATFORM>  Platform: github | gitlab | jira | bitbucket [default: github]
+  -p, --platform <PLATFORM>  Platform adapter: github | gitlab | jira | bitbucket
+  -I, --instance <INSTANCE>  Named instance alias from .99problems
+  -u, --url <URL>            Override platform base URL for one-off runs
   -t, --type <TYPE>          Content type: issue | pr [default: issue]
                              In --id mode: defaults to issue; explicit --type disables fallback
   -R, --include-review-comments

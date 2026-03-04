@@ -8,7 +8,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Generator, Shell, generate};
 use std::io::Write;
 
-use config::Config;
+use config::{Config, ResolveOptions, token_env_var};
 use format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
 use model::Conversation;
 use source::{
@@ -138,9 +138,17 @@ struct GetArgs {
     #[arg(short = 'i', long = "id", visible_alias = "issue")]
     id: Option<String>,
 
-    /// Platform to fetch from [default: github]
+    /// Platform adapter to fetch from (used directly in CLI-only mode)
     #[arg(short = 'p', long, value_enum)]
     platform: Option<Platform>,
+
+    /// Named instance alias from .99problems ([instances.<alias>])
+    #[arg(short = 'I', long)]
+    instance: Option<String>,
+
+    /// Override platform base URL for one-off runs
+    #[arg(short = 'u', long)]
+    url: Option<String>,
 
     /// Content type to fetch [default: issue]
     #[arg(short = 't', long = "type", value_enum)]
@@ -183,8 +191,7 @@ fn main() -> Result<()> {
 }
 
 fn run_get(args: &GetArgs) -> Result<()> {
-    let mut cfg = load_config_for_get(args)?;
-    apply_cli_overrides(&mut cfg, args);
+    let cfg = load_config_for_get(args)?;
     emit_get_warnings(&cfg, args)?;
 
     let source = build_source_for_platform(&cfg)?;
@@ -193,23 +200,28 @@ fn run_get(args: &GetArgs) -> Result<()> {
 }
 
 fn load_config_for_get(args: &GetArgs) -> Result<Config> {
-    if let Some(p) = &args.platform {
-        Config::load_for_platform(p.as_str())
-    } else {
-        Config::load()
+    if args.platform.is_none()
+        && args.instance.is_none()
+        && args.url.is_none()
+        && args.kind.is_none()
+        && args.token.is_none()
+        && args.jira_email.is_none()
+        && args.repo.is_none()
+        && args.state.is_none()
+    {
+        return Config::load();
     }
-}
 
-fn apply_cli_overrides(cfg: &mut Config, args: &GetArgs) {
-    if let Some(k) = &args.kind {
-        k.as_str().clone_into(&mut cfg.kind);
-    }
-    if let Some(t) = &args.token {
-        cfg.token = Some(t.clone());
-    }
-    if let Some(email) = &args.jira_email {
-        cfg.jira_email = Some(email.clone());
-    }
+    Config::load_with_options(ResolveOptions {
+        platform: args.platform.as_ref().map(Platform::as_str),
+        instance: args.instance.as_deref(),
+        url: args.url.as_deref(),
+        kind: args.kind.as_ref().map(ContentType::as_str),
+        token: args.token.as_deref(),
+        jira_email: args.jira_email.as_deref(),
+        repo: args.repo.as_deref(),
+        state: args.state.as_deref(),
+    })
 }
 
 fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
@@ -226,7 +238,7 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
         && cfg.jira_email.is_none()
     {
         eprintln!(
-            "Warning: Jira token looks like an Atlassian API token. Configure --jira-email, JIRA_EMAIL, or [jira].email, or provide --token as email:api_token."
+            "Warning: Jira token looks like an Atlassian API token. Configure --jira-email, JIRA_EMAIL, or [instances.<alias>].email, or provide --token as email:api_token."
         );
     }
     if args.no_comments && args.include_review_comments {
@@ -254,8 +266,8 @@ fn fetch_get_conversations(
     cfg: &Config,
     args: &GetArgs,
 ) -> Result<Vec<Conversation>> {
-    let repo = args.repo.clone().or(cfg.repo.clone());
-    let state = args.state.clone().or(cfg.state.clone());
+    let repo = cfg.repo.clone();
+    let state = cfg.state.clone();
 
     if let Some(id) = &args.id {
         return fetch_get_by_id(source, cfg, args, repo, id);
@@ -398,16 +410,6 @@ fn print_completions<G: Generator>(generator: G, out: &mut dyn Write) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(generator, &mut cmd, name, out);
-}
-
-fn token_env_var(platform: &str) -> &'static str {
-    match platform {
-        "github" => "GITHUB_TOKEN",
-        "gitlab" => "GITLAB_TOKEN",
-        "jira" => "JIRA_TOKEN",
-        "bitbucket" => "BITBUCKET_TOKEN",
-        _ => "TOKEN",
-    }
 }
 
 fn looks_like_atlassian_api_token(token: &str) -> bool {
