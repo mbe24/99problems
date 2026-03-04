@@ -14,6 +14,11 @@ pub struct GitHubSource {
 }
 
 impl GitHubSource {
+    /// Create a GitHub source client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be constructed.
     pub fn new() -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
@@ -22,8 +27,8 @@ impl GitHubSource {
     }
 
     /// Adds Authorization + API version headers when a token is present.
-    fn apply_auth(req: RequestBuilder, token: &Option<String>) -> RequestBuilder {
-        match token.as_ref() {
+    fn apply_auth(req: RequestBuilder, token: Option<&str>) -> RequestBuilder {
+        match token {
             Some(t) => req
                 .header("Authorization", format!("Bearer {t}"))
                 .header("X-GitHub-Api-Version", GITHUB_API_VERSION),
@@ -38,7 +43,7 @@ impl GitHubSource {
     fn get_pages<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
-        token: &Option<String>,
+        token: Option<&str>,
         per_page: u32,
     ) -> Result<Vec<T>> {
         let mut results = vec![];
@@ -65,8 +70,7 @@ impl GitHubSource {
                 .headers()
                 .get("link")
                 .and_then(|v| v.to_str().ok())
-                .map(|l| l.contains(r#"rel="next""#))
-                .unwrap_or(false);
+                .is_some_and(|l| l.contains(r#"rel="next""#));
 
             let items: Vec<T> = resp.json()?;
             let done = items.is_empty() || !has_next;
@@ -88,7 +92,7 @@ impl GitHubSource {
     ) -> Result<Vec<Comment>> {
         let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/comments");
         let raw_comments: Vec<IssueCommentItem> =
-            self.get_pages(&comments_url, &req.token, req.per_page)?;
+            self.get_pages(&comments_url, req.token.as_deref(), req.per_page)?;
         Ok(raw_comments.into_iter().map(map_issue_comment).collect())
     }
 
@@ -100,7 +104,7 @@ impl GitHubSource {
     ) -> Result<Vec<Comment>> {
         let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{id}/comments");
         let raw_comments: Vec<ReviewCommentItem> =
-            self.get_pages(&comments_url, &req.token, req.per_page)?;
+            self.get_pages(&comments_url, req.token.as_deref(), req.per_page)?;
         Ok(raw_comments.into_iter().map(map_review_comment).collect())
     }
 
@@ -140,7 +144,7 @@ impl GitHubSource {
                 ("per_page", &per_page.to_string()),
                 ("page", &page.to_string()),
             ]);
-            let req_http = Self::apply_auth(req_http, &req.token);
+            let req_http = Self::apply_auth(req_http, req.token.as_deref());
             let resp = req_http.send()?;
 
             if !resp.status().is_success() {
@@ -203,7 +207,7 @@ impl GitHubSource {
             .parse::<u64>()
             .map_err(|_| anyhow!("GitHub expects a numeric issue/PR id, got '{id}'."))?;
         let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
-        let request = Self::apply_auth(self.client.get(&issue_url), &req.token);
+        let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
         let resp = request.send()?;
         if !resp.status().is_success() {
             return Err(anyhow!(
@@ -346,6 +350,7 @@ fn map_review_comment(c: ReviewCommentItem) -> Comment {
 }
 
 /// Extract `owner/repo` from a query string containing `repo:owner/repo`.
+#[must_use]
 pub fn extract_repo(query: &str) -> Option<String> {
     query
         .split_whitespace()
@@ -355,7 +360,8 @@ pub fn extract_repo(query: &str) -> Option<String> {
 
 fn repo_from_repository_url(url: &str) -> Option<String> {
     let prefix = format!("{GITHUB_API_BASE}/repos/");
-    url.strip_prefix(&prefix).map(|s| s.to_string())
+    url.strip_prefix(&prefix)
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

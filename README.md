@@ -30,28 +30,28 @@ Pre-built binaries are available for Windows x64, Linux x64, Linux ARM64, macOS 
 
 ```bash
 # Export all closed issues mentioning "Event" to JSON
-99problems -q "is:issue state:closed Event repo:schemaorg/schemaorg" -o output.json
+99problems get -q "is:issue state:closed Event repo:schemaorg/schemaorg" -o output.json
 
 # Fetch a single issue/PR with all its comments
-99problems --repo schemaorg/schemaorg --id 1842
+99problems get --repo schemaorg/schemaorg --id 1842
 
 # Fetch a PR including inline review comments
-99problems --repo github/gitignore --id 2402 --include-review-comments
+99problems get --repo github/gitignore --id 2402 --include-review-comments
 
 # Fetch a GitLab issue
-99problems --platform gitlab --repo veloren/veloren --id 6
+99problems get --platform gitlab --repo veloren/veloren --id 6
 
 # Fetch a Jira issue by key
-99problems --platform jira --id CLOUD-12817
+99problems get --platform jira --id CLOUD-12817
 
 # Search Jira issues without fetching comments (faster)
-99problems --platform jira -q "repo:CPQ state:open" --no-comments
+99problems get --platform jira -q "repo:CPQ state:open" --no-comments
 
 # Export open bug issues as YAML
-99problems -q "state:open label:bug repo:owner/repo" --format yaml
+99problems get -q "state:open label:bug repo:owner/repo" --format yaml
 
 # Pipe into jq for further processing
-99problems -q "state:closed repo:owner/repo" | jq '.[].title'
+99problems get -q "state:closed repo:owner/repo" | jq '.[].title'
 ```
 
 ## Output
@@ -120,9 +120,23 @@ email = "user@example.com"
 Token is resolved in this order: `--token` flag → `GITHUB_TOKEN`/`GITLAB_TOKEN`/`JIRA_TOKEN`/`BITBUCKET_TOKEN` env var → `./.99problems` → `~/.99problems`.  
 For Jira Atlassian Cloud API tokens, also provide an email via `--jira-email`, `JIRA_EMAIL`, or `[jira].email` (or pass `--token` as `email:api_token`).
 
-## Options
+## Commands
 
 ```
+Commands:
+  get (alias: got)      Fetch issue and pull request conversations
+  completions <SHELL>   Generate shell completion script and print it to stdout
+
+Global options:
+  -h, --help            Print help
+  -V, --version         Print version
+```
+
+## Get options
+
+```
+99problems get [OPTIONS]
+
 Options:
   -q, --query <QUERY>        Full search query (platform web UI syntax)
   -r, --repo <REPO>          Shorthand for "repo:owner/name" (alias: --project)
@@ -139,9 +153,6 @@ Options:
   -R, --include-review-comments
                              Include pull request review comments (GitHub/GitLab PRs)
       --no-comments         Skip fetching comments (faster, smaller output)
-  -c, --completions <COMPLETIONS>
-                             Generate shell completion script and print it to stdout
-                             [possible values: bash, zsh, fish, powershell, elvish]
   -f, --format <FORMAT>      Output format: json | yaml [default: json]
   -o, --output <FILE>        Write to file instead of stdout
   -k, --token <TOKEN>        Personal access token
@@ -156,13 +167,13 @@ Generate a completion script and source/install it in your shell.
 
 ```bash
 # If installed via cargo/npm globally:
-99problems --completions bash
+99problems completions bash
 
 # Via cargo without installing:
-cargo run -- --completions powershell
+cargo run -- completions powershell
 
 # Via npm package:
-npx @mbe24/99problems --completions zsh
+npx @mbe24/99problems completions zsh
 ```
 
 When installed via npm, postinstall will try to auto-install completions for

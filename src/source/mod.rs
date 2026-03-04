@@ -7,6 +7,12 @@ pub mod jira;
 
 /// A pluggable data source that fetches issue/PR conversations.
 pub trait Source {
+    /// Fetch issue or pull request conversations for a request target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request validation fails, authentication fails,
+    /// or the remote platform returns a non-success/invalid response.
     fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>>;
 }
 
@@ -52,6 +58,7 @@ pub struct Query {
 impl Query {
     /// Build a query by merging a raw string with convenience shorthands.
     /// Shorthands are only appended if their qualifier isn't already present in the raw string.
+    #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         raw: Option<String>,

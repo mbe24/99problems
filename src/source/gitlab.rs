@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use anyhow::{Result, anyhow};
 use reqwest::StatusCode;
@@ -17,6 +18,11 @@ pub struct GitLabSource {
 }
 
 impl GitLabSource {
+    /// Create a GitLab source client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be constructed.
     pub fn new(base_url: Option<String>) -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
@@ -30,8 +36,8 @@ impl GitLabSource {
         Ok(Self { client, base_url })
     }
 
-    fn apply_auth(req: RequestBuilder, token: &Option<String>) -> RequestBuilder {
-        match token.as_ref() {
+    fn apply_auth(req: RequestBuilder, token: Option<&str>) -> RequestBuilder {
+        match token {
             Some(t) => req.header("PRIVATE-TOKEN", t),
             None => req,
         }
@@ -45,7 +51,7 @@ impl GitLabSource {
         &self,
         url: &str,
         params: &[(String, String)],
-        token: &Option<String>,
+        token: Option<&str>,
         per_page: u32,
         allow_unauthenticated_empty: bool,
     ) -> Result<Vec<T>> {
@@ -76,12 +82,7 @@ impl GitLabSource {
                     } else {
                         "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
                     };
-                    return Err(anyhow!(
-                        "GitLab API auth error {}: {} {}",
-                        status,
-                        hint,
-                        body
-                    ));
+                    return Err(anyhow!("GitLab API auth error {status}: {hint} {body}"));
                 }
                 return Err(anyhow!("GitLab API error {}: {}", status, resp.text()?));
             }
@@ -110,7 +111,7 @@ impl GitLabSource {
     fn get_one<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
-        token: &Option<String>,
+        token: Option<&str>,
     ) -> Result<Option<T>> {
         let req = Self::apply_auth(self.client.get(url), token);
         let resp = req.send()?;
@@ -119,17 +120,14 @@ impl GitLabSource {
             return Ok(None);
         }
         if resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::FORBIDDEN {
+            let status = resp.status();
             let hint = if token.is_some() {
                 "GitLab token seems invalid or lacks required scope (use read_api)."
             } else {
                 "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
             };
-            return Err(anyhow!(
-                "GitLab API auth error {}: {} {}",
-                resp.status(),
-                hint,
-                resp.text()?
-            ));
+            let body = resp.text()?;
+            return Err(anyhow!("GitLab API auth error {status}: {hint} {body}"));
         }
         if !resp.status().is_success() {
             return Err(anyhow!(
@@ -162,7 +160,8 @@ impl GitLabSource {
             )
         };
 
-        let notes: Vec<GitLabNote> = self.get_pages(&url, &[], &req.token, req.per_page, true)?;
+        let notes: Vec<GitLabNote> =
+            self.get_pages(&url, &[], req.token.as_deref(), req.per_page, true)?;
         Ok(notes
             .into_iter()
             .filter(|n| !n.system)
@@ -183,7 +182,7 @@ impl GitLabSource {
         );
 
         let discussions: Vec<GitLabDiscussion> =
-            self.get_pages(&url, &[], &req.token, req.per_page, true)?;
+            self.get_pages(&url, &[], req.token.as_deref(), req.per_page, true)?;
         let mut seen = HashSet::new();
         let mut comments = vec![];
 
@@ -239,7 +238,7 @@ impl GitLabSource {
             ContentKind::Issue => {
                 let url = format!("{}/api/v4/projects/{project}/issues", self.base_url);
                 let issues: Vec<GitLabIssueItem> =
-                    self.get_pages(&url, &params, &req.token, req.per_page, false)?;
+                    self.get_pages(&url, &params, req.token.as_deref(), req.per_page, false)?;
                 issues
                     .into_iter()
                     .map(|i| {
@@ -260,7 +259,7 @@ impl GitLabSource {
             ContentKind::Pr => {
                 let url = format!("{}/api/v4/projects/{project}/merge_requests", self.base_url);
                 let mrs: Vec<GitLabMergeRequestItem> =
-                    self.get_pages(&url, &params, &req.token, req.per_page, false)?;
+                    self.get_pages(&url, &params, req.token.as_deref(), req.per_page, false)?;
                 mrs.into_iter()
                     .map(|mr| {
                         self.fetch_conversation(
@@ -284,7 +283,7 @@ impl GitLabSource {
         &self,
         repo: &str,
         iid: u64,
-        token: &Option<String>,
+        token: Option<&str>,
     ) -> Result<Option<GitLabIssueItem>> {
         let project = encode_project_path(repo);
         let url = format!("{}/api/v4/projects/{project}/issues/{iid}", self.base_url);
@@ -295,7 +294,7 @@ impl GitLabSource {
         &self,
         repo: &str,
         iid: u64,
-        token: &Option<String>,
+        token: Option<&str>,
     ) -> Result<Option<GitLabMergeRequestItem>> {
         let project = encode_project_path(repo);
         let url = format!(
@@ -318,7 +317,7 @@ impl GitLabSource {
             .map_err(|_| anyhow!("GitLab expects a numeric issue/MR id, got '{id}'."))?;
         match kind {
             ContentKind::Issue => {
-                if let Some(issue) = self.fetch_issue_by_iid(repo, iid, &req.token)? {
+                if let Some(issue) = self.fetch_issue_by_iid(repo, iid, req.token.as_deref())? {
                     return Ok(vec![self.fetch_conversation(
                         repo,
                         ConversationSeed {
@@ -333,7 +332,7 @@ impl GitLabSource {
                 }
 
                 if allow_fallback_to_pr
-                    && let Some(mr) = self.fetch_mr_by_iid(repo, iid, &req.token)?
+                    && let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())?
                 {
                     eprintln!(
                         "Warning: --id defaulted to issue, but found MR !{iid}; use --type pr for clarity."
@@ -354,7 +353,7 @@ impl GitLabSource {
                 Err(anyhow!("Issue #{iid} not found in repo {repo}."))
             }
             ContentKind::Pr => {
-                if let Some(mr) = self.fetch_mr_by_iid(repo, iid, &req.token)? {
+                if let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())? {
                     return Ok(vec![self.fetch_conversation(
                         repo,
                         ConversationSeed {
@@ -368,7 +367,10 @@ impl GitLabSource {
                     )?]);
                 }
 
-                if self.fetch_issue_by_iid(repo, iid, &req.token)?.is_some() {
+                if self
+                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())?
+                    .is_some()
+                {
                     return Err(anyhow!(
                         "ID {iid} in repo {repo} is an issue, not a merge request."
                     ));
@@ -624,7 +626,7 @@ fn encode_project_path(path: &str) -> String {
         if b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'.' | b'_' | b'~') {
             out.push(*b as char);
         } else {
-            out.push_str(&format!("%{:02X}", b));
+            write!(out, "%{b:02X}").expect("writing to String should never fail");
         }
     }
     out
