@@ -1,14 +1,17 @@
 mod cmd;
 mod config;
+mod error;
 mod format;
 mod logging;
 mod model;
 mod source;
 
-use anyhow::Result;
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Generator, Shell, generate};
 use std::io::Write;
+use tracing::error;
+
+use crate::error::{AppError, classify_anyhow_error};
 
 #[derive(Debug, Clone, ValueEnum)]
 enum CompletionShell {
@@ -31,6 +34,12 @@ impl CompletionShell {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ErrorFormat {
+    Text,
+    Json,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "99problems",
@@ -47,6 +56,10 @@ struct Cli {
     /// Suppress non-error diagnostics
     #[arg(short = 'Q', long = "quiet", global = true)]
     quiet: bool,
+
+    /// Error output format
+    #[arg(long, value_enum, default_value = "text", global = true)]
+    error_format: ErrorFormat,
 
     #[command(subcommand)]
     command: Commands,
@@ -68,16 +81,23 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
     let cli = Cli::parse();
-    logging::init(cli.verbose, cli.quiet)?;
-    match cli.command {
+    if let Err(err) = logging::init(cli.verbose, cli.quiet) {
+        render_and_exit(classify_anyhow_error(&err), cli.error_format);
+    }
+
+    let result = match cli.command {
         Commands::Get(args) => cmd::get::run(&args),
         Commands::Config(args) => cmd::config::run(&args),
         Commands::Completions { shell } => {
             print_completions(shell.as_clap_shell(), &mut std::io::stdout());
             Ok(())
         }
+    };
+
+    if let Err(err) = result {
+        render_and_exit(classify_anyhow_error(&err), cli.error_format);
     }
 }
 
@@ -85,6 +105,19 @@ fn print_completions<G: Generator>(generator: G, out: &mut dyn Write) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(generator, &mut cmd, name, out);
+}
+
+fn render_and_exit(app_err: AppError, format: ErrorFormat) -> ! {
+    match format {
+        ErrorFormat::Text => eprintln!("Error: {}", app_err.render_text()),
+        ErrorFormat::Json => eprintln!("{}", app_err.render_json()),
+    }
+    error!(
+        category = app_err.category().code(),
+        exit_code = app_err.exit_code(),
+        "command failed"
+    );
+    std::process::exit(app_err.exit_code());
 }
 
 #[cfg(test)]
@@ -181,5 +214,24 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("--quiet"));
         assert!(message.contains("--verbose"));
+    }
+
+    #[test]
+    fn parses_error_format_json() {
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "--error-format",
+            "json",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+        ])
+        .expect("expected --error-format json to parse");
+        match cli.error_format {
+            ErrorFormat::Json => {}
+            ErrorFormat::Text => panic!("expected json error format"),
+        }
     }
 }

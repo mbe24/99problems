@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::CONTENT_TYPE;
@@ -7,6 +7,7 @@ use serde_json::Value;
 use tracing::{debug, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
+use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation};
 
 const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
@@ -57,6 +58,11 @@ impl JiraSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
+    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+        req.send()
+            .map_err(|err| app_error_from_reqwest("Jira", operation, err).into())
+    }
+
     fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
         let fields = "summary,description,status";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
@@ -66,7 +72,7 @@ impl JiraSource {
             req.jira_email.as_deref(),
         )
         .query(&[("fields", fields)]);
-        let resp = http.send()?;
+        let resp = self.send(http, "issue fetch")?;
         if resp.status() == StatusCode::NOT_FOUND {
             let body = resp.text().unwrap_or_default();
             let auth_hint = if req.token.is_some() {
@@ -78,12 +84,15 @@ impl JiraSource {
             } else {
                 " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [jira].token."
             };
-            return Err(anyhow!(
+            return Err(AppError::not_found(format!(
                 "Jira issue '{}' was not found or is not accessible.{} Response: {}",
                 id_or_key,
                 auth_hint,
                 body_snippet(&body)
-            ));
+            ))
+            .with_provider("jira")
+            .with_http_status(StatusCode::NOT_FOUND)
+            .into());
         }
         let issue: JiraIssueItem = parse_jira_json(
             resp,
@@ -127,7 +136,7 @@ impl JiraSource {
                 ("startAt", start_at.to_string()),
                 ("maxResults", per_page.to_string()),
             ]);
-            let resp = http.send()?;
+            let resp = self.send(http, "comment fetch")?;
             let page: JiraCommentsPage = parse_jira_json(
                 resp,
                 req.token.as_deref(),
@@ -166,9 +175,10 @@ impl JiraSource {
     fn search(&self, req: &FetchRequest, raw_query: &str) -> Result<Vec<Conversation>> {
         let filters = parse_jira_query(raw_query);
         if matches!(filters.kind, ContentKind::Pr) {
-            return Err(anyhow!(
-                "Platform 'jira' does not support pull requests. Use --type issue."
-            ));
+            return Err(AppError::usage(
+                "Platform 'jira' does not support pull requests. Use --type issue.",
+            )
+            .into());
         }
         let jql = build_jql(&filters)?;
         let per_page = Self::bounded_per_page(req.per_page);
@@ -201,7 +211,7 @@ impl JiraSource {
                 req.jira_email.as_deref(),
             )
             .query(&query_params);
-            let resp = http.send()?;
+            let resp = self.send(http, "search")?;
             let page: JiraSearchResponse = parse_jira_json(
                 resp,
                 req.token.as_deref(),
@@ -243,9 +253,11 @@ impl JiraSource {
                 break;
             }
             if page.is_last == Some(false) {
-                return Err(anyhow!(
-                    "Jira API search response indicated more pages but provided no pagination cursor."
-                ));
+                return Err(AppError::provider(
+                    "Jira API search response indicated more pages but provided no pagination cursor.",
+                )
+                .with_provider("jira")
+                .into());
             }
             break;
         }
@@ -260,9 +272,10 @@ impl Source for JiraSource {
             FetchTarget::Search { raw_query } => self.search(req, raw_query),
             FetchTarget::Id { id, kind, .. } => {
                 if matches!(kind, ContentKind::Pr) {
-                    return Err(anyhow!(
-                        "Platform 'jira' does not support pull requests. Use --type issue."
-                    ));
+                    return Err(AppError::usage(
+                        "Platform 'jira' does not support pull requests. Use --type issue.",
+                    )
+                    .into());
                 }
                 Ok(vec![self.fetch_issue(id, req)?])
             }
@@ -406,10 +419,9 @@ fn parse_jira_query(raw_query: &str) -> JiraFilters {
 }
 
 fn build_jql(filters: &JiraFilters) -> Result<String> {
-    let project = filters
-        .repo
-        .as_deref()
-        .ok_or_else(|| anyhow!("No repo: found in query. Use --repo with Jira project key."))?;
+    let project = filters.repo.as_deref().ok_or_else(|| {
+        AppError::usage("No repo: found in query. Use --repo with Jira project key.")
+    })?;
 
     let mut clauses = vec![format!("project = {}", quote_jql(project))];
     if let Some(state) = filters.state.as_deref() {
@@ -476,31 +488,32 @@ fn parse_jira_json<T: for<'de> Deserialize<'de>>(
         } else {
             ""
         };
-        return Err(anyhow!(
-            "Jira API {} error {}: {}{}",
-            operation,
-            status,
-            body_snippet(&body),
-            auth_hint
-        ));
+        let mut err = AppError::from_http("Jira", operation, status, &body).with_provider("jira");
+        if !auth_hint.is_empty() {
+            err = err.with_hint(auth_hint.trim());
+        }
+        return Err(err.into());
     }
 
     if !content_type.contains("application/json") {
-        return Err(anyhow!(
+        return Err(AppError::provider(format!(
             "Jira API {} returned non-JSON content-type '{}' (body starts with: {}). This often means an auth/login page.",
             operation,
             content_type,
             body_snippet(&body)
-        ));
+        ))
+        .with_provider("jira")
+        .with_http_status(status)
+        .into());
     }
 
     serde_json::from_str(&body).map_err(|e| {
-        anyhow!(
-            "Jira API {} response JSON decode failed: {} (body starts with: {})",
+        app_error_from_decode(
+            "Jira",
             operation,
-            e,
-            body_snippet(&body)
+            format!("{e} (body starts with: {})", body_snippet(&body)),
         )
+        .into()
     })
 }
 

@@ -1,9 +1,10 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::{Args, ValueEnum};
 use std::io::Write;
 use tracing::{debug, info, warn};
 
 use crate::config::{Config, ResolveOptions, token_env_var};
+use crate::error::AppError;
 use crate::format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
 use crate::model::Conversation;
 use crate::source::{
@@ -200,9 +201,10 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
         warn!("Warning: --include-review-comments is ignored when --no-comments is set.");
     }
     if cfg.platform == "jira" && cfg.kind == "pr" {
-        return Err(anyhow!(
-            "Platform 'jira' does not support pull requests. Use --type issue."
-        ));
+        return Err(AppError::usage(
+            "Platform 'jira' does not support pull requests. Use --type issue.",
+        )
+        .into());
     }
     Ok(())
 }
@@ -212,7 +214,7 @@ fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
         "github" => Ok(Box::new(GitHubSource::new()?)),
         "gitlab" => Ok(Box::new(GitLabSource::new(cfg.platform_url.clone())?)),
         "jira" => Ok(Box::new(JiraSource::new(cfg.platform_url.clone())?)),
-        other => Err(anyhow!("Platform '{other}' is not yet supported")),
+        other => Err(AppError::usage(format!("Platform '{other}' is not yet supported")).into()),
     }
 }
 
@@ -256,7 +258,7 @@ fn fetch_get_by_id(
     let repo_for_id = if cfg.platform == "jira" {
         repo.unwrap_or_default()
     } else {
-        repo.ok_or_else(|| anyhow!("--repo is required when using --id/--issue"))?
+        repo.ok_or_else(|| AppError::usage("--repo is required when using --id/--issue"))?
     };
     let req = FetchRequest {
         target: FetchTarget::Id {
@@ -317,9 +319,10 @@ fn fetch_get_by_search(
         cfg.token.clone(),
     );
     if query.raw.trim().is_empty() {
-        return Err(anyhow!(
-            "No query specified. Use -q or provide --repo/--state/--labels."
-        ));
+        return Err(AppError::usage(
+            "No query specified. Use -q or provide --repo/--state/--labels.",
+        )
+        .into());
     }
     let req = FetchRequest {
         target: FetchTarget::Search {

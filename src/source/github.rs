@@ -1,9 +1,10 @@
-use anyhow::{Result, anyhow};
-use reqwest::blocking::{Client, RequestBuilder};
+use anyhow::Result;
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
+use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -41,6 +42,11 @@ impl GitHubSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
+    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+        req.send()
+            .map_err(|err| app_error_from_reqwest("GitHub", operation, err).into())
+    }
+
     fn get_pages<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
@@ -58,14 +64,14 @@ impl GitHubSource {
                 ("page", page.to_string()),
             ]);
             let req = Self::apply_auth(req, token);
-            let resp = req.send()?;
+            let resp = self.send(req, "page fetch")?;
 
             if !resp.status().is_success() {
-                return Err(anyhow!(
-                    "GitHub API error {}: {}",
-                    resp.status(),
-                    resp.text()?
-                ));
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+                return Err(AppError::from_http("GitHub", "page fetch", status, &body).into());
             }
 
             let has_next = resp
@@ -74,7 +80,9 @@ impl GitHubSource {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|l| l.contains(r#"rel="next""#));
 
-            let items: Vec<T> = resp.json()?;
+            let items: Vec<T> = resp
+                .json()
+                .map_err(|err| app_error_from_decode("GitHub", "page fetch", err))?;
             trace!(count = items.len(), page, "decoded GitHub page");
             let done = items.is_empty() || !has_next;
             results.extend(items);
@@ -149,17 +157,19 @@ impl GitHubSource {
                 ("page", &page.to_string()),
             ]);
             let req_http = Self::apply_auth(req_http, req.token.as_deref());
-            let resp = req_http.send()?;
+            let resp = self.send(req_http, "search")?;
 
             if !resp.status().is_success() {
-                return Err(anyhow!(
-                    "GitHub search error {}: {}",
-                    resp.status(),
-                    resp.text()?
-                ));
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+                return Err(AppError::from_http("GitHub", "search", status, &body).into());
             }
 
-            let search: SearchResponse = resp.json()?;
+            let search: SearchResponse = resp
+                .json()
+                .map_err(|err| app_error_from_decode("GitHub", "search", err))?;
             trace!(
                 count = search.items.len(),
                 page, "decoded GitHub search page"
@@ -182,10 +192,10 @@ impl GitHubSource {
                     .and_then(repo_from_repository_url)
                     .or_else(|| repo_from_query.clone())
                     .ok_or_else(|| {
-                        anyhow!(
+                        AppError::usage(format!(
                             "Could not determine repo for item #{}. Include repo:owner/name in query.",
                             item.number
-                        )
+                        ))
                     })?;
 
                 self.fetch_conversation(
@@ -211,27 +221,30 @@ impl GitHubSource {
         kind: ContentKind,
         allow_fallback_to_pr: bool,
     ) -> Result<Vec<Conversation>> {
-        let issue_id = id
-            .parse::<u64>()
-            .map_err(|_| anyhow!("GitHub expects a numeric issue/PR id, got '{id}'."))?;
+        let issue_id = id.parse::<u64>().map_err(|_| {
+            AppError::usage(format!("GitHub expects a numeric issue/PR id, got '{id}'."))
+        })?;
         let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
         let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
-        let resp = request.send()?;
+        let resp = self.send(request, "issue fetch")?;
         if !resp.status().is_success() {
-            return Err(anyhow!(
-                "GitHub issue error {}: {}",
-                resp.status(),
-                resp.text()?
-            ));
+            let status = resp.status();
+            let body = resp
+                .text()
+                .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+            return Err(AppError::from_http("GitHub", "issue fetch", status, &body).into());
         }
-        let issue: IssueItem = resp.json()?;
+        let issue: IssueItem = resp
+            .json()
+            .map_err(|err| app_error_from_decode("GitHub", "issue fetch", err))?;
         let is_pr = issue.pull_request.is_some();
 
         match kind {
             ContentKind::Issue if is_pr && !allow_fallback_to_pr => {
-                return Err(anyhow!(
+                return Err(AppError::usage(format!(
                     "ID {issue_id} in repo {repo} is a pull request. Use --type pr or omit --type."
-                ));
+                ))
+                .into());
             }
             ContentKind::Issue if is_pr && allow_fallback_to_pr => {
                 warn!(
@@ -239,9 +252,10 @@ impl GitHubSource {
                 );
             }
             ContentKind::Pr if !is_pr => {
-                return Err(anyhow!(
+                return Err(AppError::usage(format!(
                     "ID {issue_id} in repo {repo} is an issue, not a pull request."
-                ));
+                ))
+                .into());
             }
             _ => {}
         }
