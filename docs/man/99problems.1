@@ -1,0 +1,52 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH 99problems 1  "99problems 0.2.0" 
+.SH NAME
+99problems \- Fetch issue and pull request conversations
+.SH SYNOPSIS
+\fB99problems\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-\-error\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Fetch issue and pull request conversations from GitHub, GitLab, and Jira.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Increase diagnostic verbosity (\-v, \-vv, \-vvv)
+.TP
+\fB\-Q\fR, \fB\-\-quiet\fR
+Suppress non\-error diagnostics
+.TP
+\fB\-\-error\-format\fR \fI<ERROR_FORMAT>\fR [default: text]
+Error output format
+.br
+
+.br
+[\fIpossible values: \fRtext, json]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+99problems\-get(1)
+Fetch issue and pull request conversations
+.TP
+99problems\-config(1)
+Inspect and edit .99problems configuration
+.TP
+99problems\-completions(1)
+Generate shell completion script and print it to stdout
+.TP
+99problems\-man(1)
+Generate and print/write man pages
+.TP
+99problems\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+Examples:
+  99problems get \-\-repo schemaorg/schemaorg \-\-id 1842
+  99problems get \-q "repo:github/gitignore is:pr 2402" \-\-include\-review\-comments
+  99problems man \-\-output docs/man
+.SH VERSION
+v0.2.0
