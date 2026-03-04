@@ -128,6 +128,7 @@ Legacy sections (`[github]`, `[gitlab]`, `[jira]`, `[bitbucket]`) and top-level 
 ```
 Commands:
   get (alias: got)      Fetch issue and pull request conversations
+  config                Inspect and edit .99problems configuration
   completions <SHELL>   Generate shell completion script and print it to stdout
 
 Global options:
@@ -138,6 +139,53 @@ Global options:
 ## Get options
 
 ```
+
+## Config commands
+
+`99problems config` lets you manage `.99problems` without editing TOML manually.
+
+```bash
+# Show config file path for local scope (default)
+99problems config path
+
+# Show merged view (home + local, local wins), masking tokens by default
+99problems config list
+
+# Show one key from resolved scope
+99problems config get instances.work-gitlab.repo
+
+# Set keys in local scope by default
+99problems config set default_instance work-gitlab
+99problems config set instances.work-gitlab.platform gitlab
+99problems config set instances.work-gitlab.url https://gitlab.mycompany.com
+
+# Remove a key (idempotent)
+99problems config unset instances.work-gitlab.state
+```
+
+Scopes:
+- read commands (`list`, `get`) support `--scope home|local|resolved` (default: `resolved`)
+- write commands (`set`, `unset`) support `--scope home|local` (default: `local`)
+- `resolved` is read-only
+
+Supported key paths:
+- `default_instance`
+- `instances.<alias>.platform`
+- `instances.<alias>.url`
+- `instances.<alias>.token`
+- `instances.<alias>.email`
+- `instances.<alias>.repo`
+- `instances.<alias>.state`
+- `instances.<alias>.type`
+- `instances.<alias>.per_page`
+
+Instance creation rule:
+- a new alias is created only when setting `instances.<alias>.platform`
+- setting other fields on a missing alias returns an error
+
+Secret handling:
+- `list` and `get` mask token values by default
+- pass `--show-secrets` to reveal raw token values
 99problems get [OPTIONS]
 
 Options:
