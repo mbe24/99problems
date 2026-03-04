@@ -427,7 +427,7 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("1"));
             }
-            _ => panic!("expected get command"),
+            Commands::Completions { .. } => panic!("expected get command"),
         }
     }
 
@@ -440,7 +440,7 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("2"));
             }
-            _ => panic!("expected get command"),
+            Commands::Completions { .. } => panic!("expected get command"),
         }
     }
 
@@ -453,7 +453,7 @@ mod tests {
                 CompletionShell::Bash => {}
                 _ => panic!("expected bash shell"),
             },
-            _ => panic!("expected completions command"),
+            Commands::Get(_) => panic!("expected completions command"),
         }
     }
 }

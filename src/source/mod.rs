@@ -137,10 +137,10 @@ mod tests {
 
     fn build(raw: Option<&str>, kind: &str, repo: Option<&str>, state: Option<&str>) -> Query {
         Query::build(
-            raw.map(|s| s.into()),
+            raw.map(std::convert::Into::into),
             kind,
-            repo.map(|s| s.into()),
-            state.map(|s| s.into()),
+            repo.map(std::convert::Into::into),
+            state.map(std::convert::Into::into),
             None,
             None,
             None,
