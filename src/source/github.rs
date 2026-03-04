@@ -42,9 +42,9 @@ impl GitHubSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+    fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
         req.send()
-            .map_err(|err| app_error_from_reqwest("GitHub", operation, err).into())
+            .map_err(|err| app_error_from_reqwest("GitHub", operation, &err).into())
     }
 
     fn get_pages<T: for<'de> Deserialize<'de>>(
@@ -64,13 +64,13 @@ impl GitHubSource {
                 ("page", page.to_string()),
             ]);
             let req = Self::apply_auth(req, token);
-            let resp = self.send(req, "page fetch")?;
+            let resp = Self::send(req, "page fetch")?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp
                     .text()
-                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
                 return Err(AppError::from_http("GitHub", "page fetch", status, &body).into());
             }
 
@@ -157,13 +157,13 @@ impl GitHubSource {
                 ("page", &page.to_string()),
             ]);
             let req_http = Self::apply_auth(req_http, req.token.as_deref());
-            let resp = self.send(req_http, "search")?;
+            let resp = Self::send(req_http, "search")?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp
                     .text()
-                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
                 return Err(AppError::from_http("GitHub", "search", status, &body).into());
             }
 
@@ -226,12 +226,12 @@ impl GitHubSource {
         })?;
         let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
         let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
-        let resp = self.send(request, "issue fetch")?;
+        let resp = Self::send(request, "issue fetch")?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp
                 .text()
-                .map_err(|err| app_error_from_reqwest("GitHub", "error body read", err))?;
+                .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
             return Err(AppError::from_http("GitHub", "issue fetch", status, &body).into());
         }
         let issue: IssueItem = resp

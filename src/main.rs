@@ -90,7 +90,8 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = logging::init(cli.verbose, cli.quiet) {
-        render_and_exit(classify_anyhow_error(&err), cli.error_format);
+        let app_err = classify_anyhow_error(&err);
+        render_and_exit(&app_err, cli.error_format);
     }
 
     let result = match cli.command {
@@ -104,7 +105,8 @@ fn main() {
     };
 
     if let Err(err) = result {
-        render_and_exit(classify_anyhow_error(&err), cli.error_format);
+        let app_err = classify_anyhow_error(&err);
+        render_and_exit(&app_err, cli.error_format);
     }
 }
 
@@ -114,7 +116,7 @@ fn print_completions<G: Generator>(generator: G, out: &mut dyn Write) {
     generate(generator, &mut cmd, name, out);
 }
 
-fn render_and_exit(app_err: AppError, format: ErrorFormat) -> ! {
+fn render_and_exit(app_err: &AppError, format: ErrorFormat) -> ! {
     match format {
         ErrorFormat::Text => eprintln!("Error: {}", app_err.render_text()),
         ErrorFormat::Json => eprintln!("{}", app_err.render_json()),
