@@ -4,18 +4,19 @@ mod model;
 mod source;
 
 use anyhow::{Result, anyhow};
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Generator, Shell, generate};
 use std::io::Write;
 
 use config::Config;
 use format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
+use model::Conversation;
 use source::{
     ContentKind, FetchRequest, FetchTarget, Query, Source, github::GitHubSource,
     gitlab::GitLabSource, jira::JiraSource,
 };
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputFormat {
     Json,
     Yaml,
@@ -80,9 +81,30 @@ impl CompletionShell {
 #[command(
     name = "99problems",
     about = "Fetch issue and pull request conversations",
+    subcommand_required = true,
+    arg_required_else_help = true,
     version
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Fetch issue and pull request conversations
+    #[command(visible_alias = "got")]
+    Get(Box<GetArgs>),
+
+    /// Generate shell completion script and print it to stdout
+    Completions {
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Args, Debug)]
+struct GetArgs {
     /// Full search query (same syntax as the platform's web UI search bar)
     /// e.g. "state:closed Event repo:owner/repo"
     #[arg(short = 'q', long)]
@@ -147,50 +169,50 @@ struct Cli {
     /// Jira account email used with API tokens (for Atlassian Cloud basic auth)
     #[arg(long)]
     jira_email: Option<String>,
-
-    /// Generate shell completion script and print it to stdout
-    #[arg(short = 'c', long, value_enum)]
-    completions: Option<CompletionShell>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(shell) = &cli.completions {
-        let shell = shell.as_clap_shell();
-        print_completions(shell, &mut std::io::stdout());
-        return Ok(());
+    match cli.command {
+        Commands::Get(args) => run_get(&args),
+        Commands::Completions { shell } => {
+            print_completions(shell.as_clap_shell(), &mut std::io::stdout());
+            Ok(())
+        }
     }
-    let mut cfg = if let Some(p) = &cli.platform {
-        Config::load_for_platform(p.as_str())?
+}
+
+fn run_get(args: &GetArgs) -> Result<()> {
+    let mut cfg = load_config_for_get(args)?;
+    apply_cli_overrides(&mut cfg, args);
+    emit_get_warnings(&cfg, args)?;
+
+    let source = build_source_for_platform(&cfg)?;
+    let conversations = fetch_get_conversations(source.as_ref(), &cfg, args)?;
+    write_formatted_output(args.format, args.output.as_deref(), &conversations)
+}
+
+fn load_config_for_get(args: &GetArgs) -> Result<Config> {
+    if let Some(p) = &args.platform {
+        Config::load_for_platform(p.as_str())
     } else {
-        Config::load()?
-    };
-
-    // CLI flags override config values
-    if let Some(k) = &cli.kind {
-        cfg.kind = k.as_str().to_owned();
+        Config::load()
     }
-    if let Some(t) = cli.token {
-        cfg.token = Some(t);
+}
+
+fn apply_cli_overrides(cfg: &mut Config, args: &GetArgs) {
+    if let Some(k) = &args.kind {
+        k.as_str().clone_into(&mut cfg.kind);
     }
-    if let Some(email) = cli.jira_email {
-        cfg.jira_email = Some(email);
+    if let Some(t) = &args.token {
+        cfg.token = Some(t.clone());
     }
+    if let Some(email) = &args.jira_email {
+        cfg.jira_email = Some(email.clone());
+    }
+}
 
-    let repo = cli.repo.clone().or(cfg.repo.clone());
-    let state = cli.state.clone().or(cfg.state.clone());
-
-    let formatter: Box<dyn Formatter> = match cli.format {
-        OutputFormat::Json => Box::new(JsonFormatter),
-        OutputFormat::Yaml => Box::new(YamlFormatter),
-    };
-
-    let source: Box<dyn Source> = match cfg.platform.as_str() {
-        "github" => Box::new(GitHubSource::new()?),
-        "gitlab" => Box::new(GitLabSource::new(cfg.platform_url.clone())?),
-        "jira" => Box::new(JiraSource::new(cfg.platform_url.clone())?),
-        other => return Err(anyhow!("Platform '{other}' is not yet supported")),
-    };
+fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     if cfg.token.is_none() {
         let env_var = token_env_var(&cfg.platform);
         eprintln!(
@@ -207,106 +229,162 @@ fn main() -> Result<()> {
             "Warning: Jira token looks like an Atlassian API token. Configure --jira-email, JIRA_EMAIL, or [jira].email, or provide --token as email:api_token."
         );
     }
-    if cli.no_comments && cli.include_review_comments {
+    if args.no_comments && args.include_review_comments {
         eprintln!("Warning: --include-review-comments is ignored when --no-comments is set.");
     }
-
     if cfg.platform == "jira" && cfg.kind == "pr" {
         return Err(anyhow!(
             "Platform 'jira' does not support pull requests. Use --type issue."
         ));
     }
+    Ok(())
+}
 
-    let conversations = if let Some(id) = cli.id {
-        let mut ignored_flags = Vec::new();
-        if cli.query.is_some() {
-            ignored_flags.push("--query");
-        }
-        if cli.state.is_some() {
-            ignored_flags.push("--state");
-        }
-        if cli.labels.is_some() {
-            ignored_flags.push("--labels");
-        }
-        if cli.author.is_some() {
-            ignored_flags.push("--author");
-        }
-        if cli.since.is_some() {
-            ignored_flags.push("--since");
-        }
-        if cli.milestone.is_some() {
-            ignored_flags.push("--milestone");
-        }
-        if !ignored_flags.is_empty() {
-            eprintln!(
-                "Warning: when using --id/--issue, these flags are ignored: {}",
-                ignored_flags.join(", ")
-            );
-        }
+fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
+    match cfg.platform.as_str() {
+        "github" => Ok(Box::new(GitHubSource::new()?)),
+        "gitlab" => Ok(Box::new(GitLabSource::new(cfg.platform_url.clone())?)),
+        "jira" => Ok(Box::new(JiraSource::new(cfg.platform_url.clone())?)),
+        other => Err(anyhow!("Platform '{other}' is not yet supported")),
+    }
+}
 
-        let id_kind = if cfg.kind == "pr" {
-            ContentKind::Pr
-        } else {
-            ContentKind::Issue
-        };
-        let kind_explicit = cli.kind.is_some() || cfg.kind == "pr";
+fn fetch_get_conversations(
+    source: &dyn Source,
+    cfg: &Config,
+    args: &GetArgs,
+) -> Result<Vec<Conversation>> {
+    let repo = args.repo.clone().or(cfg.repo.clone());
+    let state = args.state.clone().or(cfg.state.clone());
 
-        let repo_for_id = if cfg.platform == "jira" {
-            repo.clone().unwrap_or_default()
-        } else {
-            repo.clone()
-                .ok_or_else(|| anyhow!("--repo is required when using --id/--issue"))?
-        };
-        let req = FetchRequest {
-            target: FetchTarget::Id {
-                repo: repo_for_id,
-                id: id.clone(),
-                kind: id_kind,
-                allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
-            },
-            per_page: cfg.per_page,
-            token: cfg.token.clone(),
-            jira_email: cfg.jira_email.clone(),
-            include_comments: !cli.no_comments,
-            include_review_comments: cli.include_review_comments,
-        };
-        source.fetch(&req)?
-    } else {
-        let query = Query::build(
-            cli.query.clone(),
-            &cfg.kind,
-            repo,
-            state,
-            cli.labels.clone(),
-            cli.author.clone(),
-            cli.since.clone(),
-            cli.milestone.clone(),
-            cfg.per_page,
-            cfg.token.clone(),
+    if let Some(id) = &args.id {
+        return fetch_get_by_id(source, cfg, args, repo, id);
+    }
+
+    fetch_get_by_search(source, cfg, args, repo, state)
+}
+
+fn fetch_get_by_id(
+    source: &dyn Source,
+    cfg: &Config,
+    args: &GetArgs,
+    repo: Option<String>,
+    id: &str,
+) -> Result<Vec<Conversation>> {
+    let ignored_flags = ignored_flags_in_id_mode(args);
+    if !ignored_flags.is_empty() {
+        eprintln!(
+            "Warning: when using --id/--issue, these flags are ignored: {}",
+            ignored_flags.join(", ")
         );
-        if query.raw.trim().is_empty() {
-            return Err(anyhow!(
-                "No query specified. Use -q or provide --repo/--state/--labels."
-            ));
-        }
-        let req = FetchRequest {
-            target: FetchTarget::Search {
-                raw_query: query.raw,
-            },
-            per_page: query.per_page,
-            token: query.token,
-            jira_email: cfg.jira_email.clone(),
-            include_comments: !cli.no_comments,
-            include_review_comments: cli.include_review_comments,
-        };
-        source.fetch(&req)?
+    }
+
+    let id_kind = if cfg.kind == "pr" {
+        ContentKind::Pr
+    } else {
+        ContentKind::Issue
     };
+    let kind_explicit = args.kind.is_some() || cfg.kind == "pr";
 
-    let output = formatter.format(&conversations)?;
+    let repo_for_id = if cfg.platform == "jira" {
+        repo.unwrap_or_default()
+    } else {
+        repo.ok_or_else(|| anyhow!("--repo is required when using --id/--issue"))?
+    };
+    let req = FetchRequest {
+        target: FetchTarget::Id {
+            repo: repo_for_id,
+            id: id.to_string(),
+            kind: id_kind,
+            allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
+        },
+        per_page: cfg.per_page,
+        token: cfg.token.clone(),
+        jira_email: cfg.jira_email.clone(),
+        include_comments: !args.no_comments,
+        include_review_comments: args.include_review_comments,
+    };
+    source.fetch(&req)
+}
 
-    match cli.output {
+fn ignored_flags_in_id_mode(args: &GetArgs) -> Vec<&'static str> {
+    let mut ignored_flags = Vec::new();
+    if args.query.is_some() {
+        ignored_flags.push("--query");
+    }
+    if args.state.is_some() {
+        ignored_flags.push("--state");
+    }
+    if args.labels.is_some() {
+        ignored_flags.push("--labels");
+    }
+    if args.author.is_some() {
+        ignored_flags.push("--author");
+    }
+    if args.since.is_some() {
+        ignored_flags.push("--since");
+    }
+    if args.milestone.is_some() {
+        ignored_flags.push("--milestone");
+    }
+    ignored_flags
+}
+
+fn fetch_get_by_search(
+    source: &dyn Source,
+    cfg: &Config,
+    args: &GetArgs,
+    repo: Option<String>,
+    state: Option<String>,
+) -> Result<Vec<Conversation>> {
+    let query = Query::build(
+        args.query.clone(),
+        &cfg.kind,
+        repo,
+        state,
+        args.labels.clone(),
+        args.author.clone(),
+        args.since.clone(),
+        args.milestone.clone(),
+        cfg.per_page,
+        cfg.token.clone(),
+    );
+    if query.raw.trim().is_empty() {
+        return Err(anyhow!(
+            "No query specified. Use -q or provide --repo/--state/--labels."
+        ));
+    }
+    let req = FetchRequest {
+        target: FetchTarget::Search {
+            raw_query: query.raw,
+        },
+        per_page: query.per_page,
+        token: query.token,
+        jira_email: cfg.jira_email.clone(),
+        include_comments: !args.no_comments,
+        include_review_comments: args.include_review_comments,
+    };
+    source.fetch(&req)
+}
+
+fn build_formatter(format: OutputFormat) -> Box<dyn Formatter> {
+    match format {
+        OutputFormat::Json => Box::new(JsonFormatter),
+        OutputFormat::Yaml => Box::new(YamlFormatter),
+    }
+}
+
+fn write_formatted_output(
+    format: OutputFormat,
+    output_path: Option<&str>,
+    conversations: &[Conversation],
+) -> Result<()> {
+    let formatter = build_formatter(format);
+    let output = formatter.format(conversations)?;
+
+    match output_path {
         Some(path) => {
-            let mut file = std::fs::File::create(&path)?;
+            let mut file = std::fs::File::create(path)?;
             file.write_all(output.as_bytes())?;
             eprintln!("Wrote {} conversations to {path}", conversations.len());
         }
@@ -334,4 +412,48 @@ fn token_env_var(platform: &str) -> &'static str {
 
 fn looks_like_atlassian_api_token(token: &str) -> bool {
     token.starts_with("AT") && !token.contains(':') && !token.contains('.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_get_subcommand() {
+        let cli = Cli::try_parse_from(["99problems", "get", "--repo", "owner/repo", "--id", "1"])
+            .expect("expected get subcommand to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(args.repo.as_deref(), Some("owner/repo"));
+                assert_eq!(args.id.as_deref(), Some("1"));
+            }
+            Commands::Completions { .. } => panic!("expected get command"),
+        }
+    }
+
+    #[test]
+    fn parses_got_alias_to_get_subcommand() {
+        let cli = Cli::try_parse_from(["99problems", "got", "--repo", "owner/repo", "--id", "2"])
+            .expect("expected got alias to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(args.repo.as_deref(), Some("owner/repo"));
+                assert_eq!(args.id.as_deref(), Some("2"));
+            }
+            Commands::Completions { .. } => panic!("expected get command"),
+        }
+    }
+
+    #[test]
+    fn parses_completions_subcommand() {
+        let cli = Cli::try_parse_from(["99problems", "completions", "bash"])
+            .expect("expected completions command to parse");
+        match cli.command {
+            Commands::Completions { shell } => match shell {
+                CompletionShell::Bash => {}
+                _ => panic!("expected bash shell"),
+            },
+            Commands::Get(_) => panic!("expected completions command"),
+        }
+    }
 }

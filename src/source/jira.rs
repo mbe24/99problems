@@ -17,6 +17,11 @@ pub struct JiraSource {
 }
 
 impl JiraSource {
+    /// Create a Jira source client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be constructed.
     pub fn new(base_url: Option<String>) -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
@@ -30,16 +35,16 @@ impl JiraSource {
 
     fn apply_auth(
         req: RequestBuilder,
-        token: &Option<String>,
-        jira_email: &Option<String>,
+        token: Option<&str>,
+        jira_email: Option<&str>,
     ) -> RequestBuilder {
         let req = req.header("Accept", "application/json");
-        match token.as_ref() {
+        match token {
             Some(t) if t.contains(':') => {
                 let (user, api_token) = t.split_once(':').unwrap_or_default();
                 req.basic_auth(user, Some(api_token))
             }
-            Some(t) => match jira_email.as_ref() {
+            Some(t) => match jira_email {
                 Some(email) => req.basic_auth(email, Some(t)),
                 None => req.bearer_auth(t),
             },
@@ -54,8 +59,12 @@ impl JiraSource {
     fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
         let fields = "summary,description,status";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
-        let http = Self::apply_auth(self.client.get(&url), &req.token, &req.jira_email)
-            .query(&[("fields", fields)]);
+        let http = Self::apply_auth(
+            self.client.get(&url),
+            req.token.as_deref(),
+            req.jira_email.as_deref(),
+        )
+        .query(&[("fields", fields)]);
         let resp = http.send()?;
         if resp.status() == StatusCode::NOT_FOUND {
             let body = resp.text().unwrap_or_default();
@@ -75,8 +84,12 @@ impl JiraSource {
                 body_snippet(&body)
             ));
         }
-        let issue: JiraIssueItem =
-            parse_jira_json(resp, &req.token, &req.jira_email, "issue fetch")?;
+        let issue: JiraIssueItem = parse_jira_json(
+            resp,
+            req.token.as_deref(),
+            req.jira_email.as_deref(),
+            "issue fetch",
+        )?;
         let comments = if req.include_comments {
             self.fetch_comments(&issue.key, req)?
         } else {
@@ -103,14 +116,22 @@ impl JiraSource {
 
         loop {
             let url = format!("{}/rest/api/3/issue/{issue_key}/comment", self.base_url);
-            let http =
-                Self::apply_auth(self.client.get(&url), &req.token, &req.jira_email).query(&[
-                    ("startAt", start_at.to_string()),
-                    ("maxResults", per_page.to_string()),
-                ]);
+            let http = Self::apply_auth(
+                self.client.get(&url),
+                req.token.as_deref(),
+                req.jira_email.as_deref(),
+            )
+            .query(&[
+                ("startAt", start_at.to_string()),
+                ("maxResults", per_page.to_string()),
+            ]);
             let resp = http.send()?;
-            let page: JiraCommentsPage =
-                parse_jira_json(resp, &req.token, &req.jira_email, "comment fetch")?;
+            let page: JiraCommentsPage = parse_jira_json(
+                resp,
+                req.token.as_deref(),
+                req.jira_email.as_deref(),
+                "comment fetch",
+            )?;
 
             for c in page.comments {
                 let body = extract_adf_text(&c.body);
@@ -161,11 +182,19 @@ impl JiraSource {
                 query_params.push(("startAt".into(), start_at.to_string()));
             }
 
-            let http = Self::apply_auth(self.client.get(&url), &req.token, &req.jira_email)
-                .query(&query_params);
+            let http = Self::apply_auth(
+                self.client.get(&url),
+                req.token.as_deref(),
+                req.jira_email.as_deref(),
+            )
+            .query(&query_params);
             let resp = http.send()?;
-            let page: JiraSearchResponse =
-                parse_jira_json(resp, &req.token, &req.jira_email, "search")?;
+            let page: JiraSearchResponse = parse_jira_json(
+                resp,
+                req.token.as_deref(),
+                req.jira_email.as_deref(),
+                "search",
+            )?;
             for issue in page.issues {
                 let comments = if req.include_comments {
                     self.fetch_comments(&issue.key, req)?
@@ -406,8 +435,8 @@ fn quote_jql(value: &str) -> String {
 
 fn parse_jira_json<T: for<'de> Deserialize<'de>>(
     resp: Response,
-    token: &Option<String>,
-    jira_email: &Option<String>,
+    token: Option<&str>,
+    jira_email: Option<&str>,
     operation: &str,
 ) -> Result<T> {
     let status = resp.status();
@@ -473,7 +502,7 @@ fn extract_adf_text(value: &Value) -> String {
         match v {
             Value::Object(map) => {
                 if let Some(Value::String(text)) = map.get("text") {
-                    out.push(text.to_string());
+                    out.push(text.clone());
                 }
                 if let Some(content) = map.get("content") {
                     walk(content, out);

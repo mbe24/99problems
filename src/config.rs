@@ -46,6 +46,10 @@ pub struct Config {
 impl Config {
     /// Load and merge: home dotfile (base) → local dotfile (override) → env vars.
     /// CLI flags are applied on top in main.rs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or parsing either dotfile fails.
     pub fn load() -> Result<Self> {
         let home = load_dotfile(home_dotfile_path())?;
         let local = load_dotfile(local_dotfile_path())?;
@@ -56,21 +60,25 @@ impl Config {
             .or_else(|| home.platform.clone())
             .unwrap_or_else(|| "github".into());
 
-        Self::load_with_platform(platform, home, local)
+        Ok(Self::load_with_platform(platform, &home, &local))
     }
 
     /// Load config while forcing a specific platform (used by --platform).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or parsing either dotfile fails.
     pub fn load_for_platform(platform: &str) -> Result<Self> {
         let home = load_dotfile(home_dotfile_path())?;
         let local = load_dotfile(local_dotfile_path())?;
-        Self::load_with_platform(platform.to_string(), home, local)
+        Ok(Self::load_with_platform(
+            platform.to_string(),
+            &home,
+            &local,
+        ))
     }
 
-    fn load_with_platform(
-        platform: String,
-        home: DotfileConfig,
-        local: DotfileConfig,
-    ) -> Result<Self> {
+    fn load_with_platform(platform: String, home: &DotfileConfig, local: &DotfileConfig) -> Self {
         let kind = local
             .kind
             .clone()
@@ -83,14 +91,13 @@ impl Config {
 
         // Resolve token: env var → local dotfile → home dotfile
         let env_var = match platform.as_str() {
-            "github" => "GITHUB_TOKEN",
             "gitlab" => "GITLAB_TOKEN",
             "jira" => "JIRA_TOKEN",
             "bitbucket" => "BITBUCKET_TOKEN",
             _ => "GITHUB_TOKEN",
         };
         let (dotfile_token, dotfile_email, platform_url) =
-            resolve_platform_auth(&platform, &local, &home);
+            resolve_platform_auth(&platform, local, home);
         let token = std::env::var(env_var).ok().or(dotfile_token);
         let jira_email = if platform == "jira" {
             std::env::var("JIRA_EMAIL").ok().or(dotfile_email)
@@ -98,7 +105,7 @@ impl Config {
             None
         };
 
-        Ok(Self {
+        Self {
             platform,
             kind,
             token,
@@ -107,7 +114,7 @@ impl Config {
             state,
             per_page,
             platform_url,
-        })
+        }
     }
 }
 
