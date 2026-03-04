@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
+use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation};
 
 const GITLAB_DEFAULT_BASE_URL: &str = "https://gitlab.com";
@@ -48,6 +49,11 @@ impl GitLabSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
+    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+        req.send()
+            .map_err(|err| app_error_from_reqwest("GitLab", operation, err).into())
+    }
+
     fn get_pages<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
@@ -67,7 +73,7 @@ impl GitLabSource {
             debug!(url = %url, page, per_page, "fetching GitLab page");
 
             let req = Self::apply_auth(self.client.get(url).query(&query), token);
-            let resp = req.send()?;
+            let resp = self.send(req, "page fetch")?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -84,9 +90,17 @@ impl GitLabSource {
                     } else {
                         "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
                     };
-                    return Err(anyhow!("GitLab API auth error {status}: {hint} {body}"));
+                    return Err(AppError::auth(format!(
+                        "GitLab API auth error {status}: {hint} {body}"
+                    ))
+                    .with_provider("gitlab")
+                    .with_http_status(status)
+                    .into());
                 }
-                return Err(anyhow!("GitLab API error {}: {}", status, resp.text()?));
+                let body = resp
+                    .text()
+                    .map_err(|err| app_error_from_reqwest("GitLab", "error body read", err))?;
+                return Err(AppError::from_http("GitLab", "page fetch", status, &body).into());
             }
 
             let next_page = resp
@@ -97,7 +111,9 @@ impl GitLabSource {
                 .trim()
                 .to_string();
 
-            let items: Vec<T> = resp.json()?;
+            let items: Vec<T> = resp
+                .json()
+                .map_err(|err| app_error_from_decode("GitLab", "page fetch", err))?;
             trace!(count = items.len(), page, "decoded GitLab page");
             results.extend(items);
 
@@ -117,7 +133,7 @@ impl GitLabSource {
         token: Option<&str>,
     ) -> Result<Option<T>> {
         let req = Self::apply_auth(self.client.get(url), token);
-        let resp = req.send()?;
+        let resp = self.send(req, "single fetch")?;
 
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -130,17 +146,24 @@ impl GitLabSource {
                 "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
             };
             let body = resp.text()?;
-            return Err(anyhow!("GitLab API auth error {status}: {hint} {body}"));
+            return Err(
+                AppError::auth(format!("GitLab API auth error {status}: {hint} {body}"))
+                    .with_provider("gitlab")
+                    .with_http_status(status)
+                    .into(),
+            );
         }
         if !resp.status().is_success() {
-            return Err(anyhow!(
-                "GitLab API error {}: {}",
-                resp.status(),
-                resp.text()?
-            ));
+            let status = resp.status();
+            let body = resp
+                .text()
+                .map_err(|err| app_error_from_reqwest("GitLab", "error body read", err))?;
+            return Err(AppError::from_http("GitLab", "single fetch", status, &body).into());
         }
 
-        Ok(Some(resp.json()?))
+        Ok(Some(resp.json().map_err(|err| {
+            app_error_from_decode("GitLab", "single fetch", err)
+        })?))
     }
 
     fn fetch_notes(
@@ -231,7 +254,9 @@ impl GitLabSource {
             .repo
             .as_deref()
             .ok_or_else(|| {
-                anyhow!("No repo: found in query. Use --repo or include 'repo:group/project' in -q")
+                AppError::usage(
+                    "No repo: found in query. Use --repo or include 'repo:group/project' in -q",
+                )
             })?
             .to_string();
         let project = encode_project_path(&repo);
@@ -315,9 +340,9 @@ impl GitLabSource {
         kind: ContentKind,
         allow_fallback_to_pr: bool,
     ) -> Result<Vec<Conversation>> {
-        let iid = id
-            .parse::<u64>()
-            .map_err(|_| anyhow!("GitLab expects a numeric issue/MR id, got '{id}'."))?;
+        let iid = id.parse::<u64>().map_err(|_| {
+            AppError::usage(format!("GitLab expects a numeric issue/MR id, got '{id}'."))
+        })?;
         match kind {
             ContentKind::Issue => {
                 if let Some(issue) = self.fetch_issue_by_iid(repo, iid, req.token.as_deref())? {
@@ -353,7 +378,7 @@ impl GitLabSource {
                     )?]);
                 }
 
-                Err(anyhow!("Issue #{iid} not found in repo {repo}."))
+                Err(AppError::not_found(format!("Issue #{iid} not found in repo {repo}.")).into())
             }
             ContentKind::Pr => {
                 if let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())? {
@@ -374,12 +399,16 @@ impl GitLabSource {
                     .fetch_issue_by_iid(repo, iid, req.token.as_deref())?
                     .is_some()
                 {
-                    return Err(anyhow!(
+                    return Err(AppError::usage(format!(
                         "ID {iid} in repo {repo} is an issue, not a merge request."
-                    ));
+                    ))
+                    .into());
                 }
 
-                Err(anyhow!("Merge request !{iid} not found in repo {repo}."))
+                Err(
+                    AppError::not_found(format!("Merge request !{iid} not found in repo {repo}."))
+                        .into(),
+                )
             }
         }
     }
