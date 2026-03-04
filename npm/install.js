@@ -80,7 +80,7 @@ function installCompletions(binaryPath) {
   const shell = detectShell();
   if (!shell) {
     console.log(
-      "[99problems] Could not detect your shell. Generate completions manually, e.g. '99problems --completions bash'."
+      "[99problems] Could not detect your shell. Generate completions manually, e.g. '99problems completions bash'."
     );
     return;
   }
@@ -88,13 +88,13 @@ function installCompletions(binaryPath) {
   const target = completionTarget(shell);
   if (!target) {
     console.log(
-      `[99problems] Shell '${shell}' detected. Auto-install is not supported; generate manually with '99problems --completions ${shell}'.`
+      `[99problems] Shell '${shell}' detected. Auto-install is not supported; generate manually with '99problems completions ${shell}'.`
     );
     return;
   }
 
   try {
-    const script = execFileSync(binaryPath, ["--completions", shell], {
+    const script = execFileSync(binaryPath, ["completions", shell], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -107,7 +107,7 @@ function installCompletions(binaryPath) {
       `[99problems] Could not install ${shell} completions automatically: ${err.message}`
     );
     console.warn(
-      `[99problems] You can still generate them manually with: 99problems --completions ${shell}`
+      `[99problems] You can still generate them manually with: 99problems completions ${shell}`
     );
   }
 }
