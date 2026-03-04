@@ -49,9 +49,9 @@ impl GitLabSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+    fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
         req.send()
-            .map_err(|err| app_error_from_reqwest("GitLab", operation, err).into())
+            .map_err(|err| app_error_from_reqwest("GitLab", operation, &err).into())
     }
 
     fn get_pages<T: for<'de> Deserialize<'de>>(
@@ -73,7 +73,7 @@ impl GitLabSource {
             debug!(url = %url, page, per_page, "fetching GitLab page");
 
             let req = Self::apply_auth(self.client.get(url).query(&query), token);
-            let resp = self.send(req, "page fetch")?;
+            let resp = Self::send(req, "page fetch")?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -99,7 +99,7 @@ impl GitLabSource {
                 }
                 let body = resp
                     .text()
-                    .map_err(|err| app_error_from_reqwest("GitLab", "error body read", err))?;
+                    .map_err(|err| app_error_from_reqwest("GitLab", "error body read", &err))?;
                 return Err(AppError::from_http("GitLab", "page fetch", status, &body).into());
             }
 
@@ -133,7 +133,7 @@ impl GitLabSource {
         token: Option<&str>,
     ) -> Result<Option<T>> {
         let req = Self::apply_auth(self.client.get(url), token);
-        let resp = self.send(req, "single fetch")?;
+        let resp = Self::send(req, "single fetch")?;
 
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -157,7 +157,7 @@ impl GitLabSource {
             let status = resp.status();
             let body = resp
                 .text()
-                .map_err(|err| app_error_from_reqwest("GitLab", "error body read", err))?;
+                .map_err(|err| app_error_from_reqwest("GitLab", "error body read", &err))?;
             return Err(AppError::from_http("GitLab", "single fetch", status, &body).into());
         }
 

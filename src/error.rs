@@ -200,7 +200,7 @@ pub fn classify_anyhow_error(err: &anyhow::Error) -> AppError {
 }
 
 #[must_use]
-pub fn app_error_from_reqwest(provider: &str, operation: &str, err: reqwest::Error) -> AppError {
+pub fn app_error_from_reqwest(provider: &str, operation: &str, err: &reqwest::Error) -> AppError {
     if err.is_timeout() || err.is_connect() {
         return AppError::network(format!("{provider} {operation} request failed: {err}"))
             .with_provider(provider);

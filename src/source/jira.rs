@@ -58,9 +58,9 @@ impl JiraSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    fn send(&self, req: RequestBuilder, operation: &str) -> Result<Response> {
+    fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
         req.send()
-            .map_err(|err| app_error_from_reqwest("Jira", operation, err).into())
+            .map_err(|err| app_error_from_reqwest("Jira", operation, &err).into())
     }
 
     fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
@@ -72,7 +72,7 @@ impl JiraSource {
             req.jira_email.as_deref(),
         )
         .query(&[("fields", fields)]);
-        let resp = self.send(http, "issue fetch")?;
+        let resp = Self::send(http, "issue fetch")?;
         if resp.status() == StatusCode::NOT_FOUND {
             let body = resp.text().unwrap_or_default();
             let auth_hint = if req.token.is_some() {
@@ -136,7 +136,7 @@ impl JiraSource {
                 ("startAt", start_at.to_string()),
                 ("maxResults", per_page.to_string()),
             ]);
-            let resp = self.send(http, "comment fetch")?;
+            let resp = Self::send(http, "comment fetch")?;
             let page: JiraCommentsPage = parse_jira_json(
                 resp,
                 req.token.as_deref(),
@@ -211,7 +211,7 @@ impl JiraSource {
                 req.jira_email.as_deref(),
             )
             .query(&query_params);
-            let resp = self.send(http, "search")?;
+            let resp = Self::send(http, "search")?;
             let page: JiraSearchResponse = parse_jira_json(
                 resp,
                 req.token.as_deref(),
