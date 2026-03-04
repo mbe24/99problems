@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct PlatformConfig {
     pub token: Option<String>,
+    pub email: Option<String>,
     /// Base URL override for self-hosted instances (e.g. GitLab)
     pub url: Option<String>,
 }
@@ -23,6 +24,7 @@ pub struct DotfileConfig {
     pub per_page: Option<u32>,
     pub github: Option<PlatformConfig>,
     pub gitlab: Option<PlatformConfig>,
+    pub jira: Option<PlatformConfig>,
     pub bitbucket: Option<PlatformConfig>,
 }
 
@@ -32,6 +34,7 @@ pub struct Config {
     pub platform: String,
     pub kind: String,
     pub token: Option<String>,
+    pub jira_email: Option<String>,
     pub repo: Option<String>,
     pub state: Option<String>,
     pub per_page: u32,
@@ -53,6 +56,21 @@ impl Config {
             .or_else(|| home.platform.clone())
             .unwrap_or_else(|| "github".into());
 
+        Self::load_with_platform(platform, home, local)
+    }
+
+    /// Load config while forcing a specific platform (used by --platform).
+    pub fn load_for_platform(platform: &str) -> Result<Self> {
+        let home = load_dotfile(home_dotfile_path())?;
+        let local = load_dotfile(local_dotfile_path())?;
+        Self::load_with_platform(platform.to_string(), home, local)
+    }
+
+    fn load_with_platform(
+        platform: String,
+        home: DotfileConfig,
+        local: DotfileConfig,
+    ) -> Result<Self> {
         let kind = local
             .kind
             .clone()
@@ -67,16 +85,24 @@ impl Config {
         let env_var = match platform.as_str() {
             "github" => "GITHUB_TOKEN",
             "gitlab" => "GITLAB_TOKEN",
+            "jira" => "JIRA_TOKEN",
             "bitbucket" => "BITBUCKET_TOKEN",
             _ => "GITHUB_TOKEN",
         };
-        let (dotfile_token, platform_url) = resolve_platform_token(&platform, &local, &home);
+        let (dotfile_token, dotfile_email, platform_url) =
+            resolve_platform_auth(&platform, &local, &home);
         let token = std::env::var(env_var).ok().or(dotfile_token);
+        let jira_email = if platform == "jira" {
+            std::env::var("JIRA_EMAIL").ok().or(dotfile_email)
+        } else {
+            None
+        };
 
         Ok(Self {
             platform,
             kind,
             token,
+            jira_email,
             repo,
             state,
             per_page,
@@ -85,12 +111,12 @@ impl Config {
     }
 }
 
-/// Resolve token and optional URL for the given platform from dotfiles only.
-fn resolve_platform_token(
+/// Resolve token/email/url for the given platform from dotfiles only.
+fn resolve_platform_auth(
     platform: &str,
     local: &DotfileConfig,
     home: &DotfileConfig,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let local_platform = platform_section(platform, local);
     let home_platform = platform_section(platform, home);
 
@@ -99,18 +125,24 @@ fn resolve_platform_token(
         .and_then(|p| p.token.clone())
         .or_else(|| home_platform.as_ref().and_then(|p| p.token.clone()));
 
+    let email = local_platform
+        .as_ref()
+        .and_then(|p| p.email.clone())
+        .or_else(|| home_platform.as_ref().and_then(|p| p.email.clone()));
+
     let url = local_platform
         .as_ref()
         .and_then(|p| p.url.clone())
         .or_else(|| home_platform.as_ref().and_then(|p| p.url.clone()));
 
-    (token, url)
+    (token, email, url)
 }
 
 fn platform_section<'a>(platform: &str, cfg: &'a DotfileConfig) -> Option<&'a PlatformConfig> {
     match platform {
         "github" => cfg.github.as_ref(),
         "gitlab" => cfg.gitlab.as_ref(),
+        "jira" => cfg.jira.as_ref(),
         "bitbucket" => cfg.bitbucket.as_ref(),
         _ => None,
     }
@@ -190,11 +222,12 @@ mod tests {
         let local = DotfileConfig {
             github: Some(PlatformConfig {
                 token: Some("ghp_section".into()),
+                email: None,
                 url: None,
             }),
             ..Default::default()
         };
-        let (token, _) = resolve_platform_token("github", &local, &home);
+        let (token, _, _) = resolve_platform_auth("github", &local, &home);
         assert_eq!(token.as_deref(), Some("ghp_section"));
     }
 }
