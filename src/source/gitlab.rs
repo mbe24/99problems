@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
+use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::model::{Comment, Conversation};
@@ -63,6 +64,7 @@ impl GitLabSource {
             let mut query = params.to_vec();
             query.push(("per_page".into(), per_page.to_string()));
             query.push(("page".into(), page.to_string()));
+            debug!(url = %url, page, per_page, "fetching GitLab page");
 
             let req = Self::apply_auth(self.client.get(url).query(&query), token);
             let resp = req.send()?;
@@ -96,6 +98,7 @@ impl GitLabSource {
                 .to_string();
 
             let items: Vec<T> = resp.json()?;
+            trace!(count = items.len(), page, "decoded GitLab page");
             results.extend(items);
 
             if next_page.is_empty() {
@@ -334,7 +337,7 @@ impl GitLabSource {
                 if allow_fallback_to_pr
                     && let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())?
                 {
-                    eprintln!(
+                    warn!(
                         "Warning: --id defaulted to issue, but found MR !{iid}; use --type pr for clarity."
                     );
                     return Ok(vec![self.fetch_conversation(

@@ -1,11 +1,12 @@
 mod cmd;
 mod config;
 mod format;
+mod logging;
 mod model;
 mod source;
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Generator, Shell, generate};
 use std::io::Write;
 
@@ -39,6 +40,14 @@ impl CompletionShell {
     version
 )]
 struct Cli {
+    /// Increase diagnostic verbosity (-v, -vv, -vvv)
+    #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true, conflicts_with = "quiet")]
+    verbose: u8,
+
+    /// Suppress non-error diagnostics
+    #[arg(short = 'Q', long = "quiet", global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -61,6 +70,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    logging::init(cli.verbose, cli.quiet)?;
     match cli.command {
         Commands::Get(args) => cmd::get::run(&args),
         Commands::Config(args) => cmd::config::run(&args),
@@ -137,5 +147,39 @@ mod tests {
             },
             Commands::Get(_) | Commands::Config(_) => panic!("expected completions command"),
         }
+    }
+
+    #[test]
+    fn parses_repeated_verbose_flag() {
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "-vv",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+        ])
+        .expect("expected repeated verbosity flags to parse");
+        assert_eq!(cli.verbose, 2);
+        assert!(!cli.quiet);
+    }
+
+    #[test]
+    fn rejects_quiet_and_verbose_together() {
+        let err = Cli::try_parse_from([
+            "99problems",
+            "--quiet",
+            "-v",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+        ])
+        .expect_err("expected conflict between --quiet and -v");
+        let message = err.to_string();
+        assert!(message.contains("--quiet"));
+        assert!(message.contains("--verbose"));
     }
 }
