@@ -11,6 +11,10 @@ use render::render_value;
 use store::{ReadScope, WriteScope};
 
 #[derive(Args, Debug)]
+#[command(
+    next_line_help = true,
+    after_help = "Examples:\n  99problems config list\n  99problems config set default_instance work-gitlab\n  99problems config get instances.work-gitlab.repo --scope resolved"
+)]
 pub(crate) struct ConfigArgs {
     #[command(subcommand)]
     pub(crate) command: ConfigSubcommand,

@@ -44,8 +44,11 @@ enum ErrorFormat {
 #[command(
     name = "99problems",
     about = "Fetch issue and pull request conversations",
+    long_about = "Fetch issue and pull request conversations from GitHub, GitLab, and Jira.",
     subcommand_required = true,
     arg_required_else_help = true,
+    next_line_help = true,
+    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get -q \"repo:github/gitignore is:pr 2402\" --include-review-comments\n  99problems man --output docs/man",
     version
 )]
 struct Cli {
@@ -79,6 +82,9 @@ enum Commands {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+
+    /// Generate and print/write man pages
+    Man(cmd::man::ManArgs),
 }
 
 fn main() {
@@ -94,6 +100,7 @@ fn main() {
             print_completions(shell.as_clap_shell(), &mut std::io::stdout());
             Ok(())
         }
+        Commands::Man(args) => cmd::man::run(Cli::command(), &args),
     };
 
     if let Err(err) = result {
@@ -133,7 +140,9 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("1"));
             }
-            Commands::Config(_) | Commands::Completions { .. } => panic!("expected get command"),
+            Commands::Config(_) | Commands::Completions { .. } | Commands::Man(_) => {
+                panic!("expected get command")
+            }
         }
     }
 
@@ -146,7 +155,9 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("2"));
             }
-            Commands::Config(_) | Commands::Completions { .. } => panic!("expected get command"),
+            Commands::Config(_) | Commands::Completions { .. } | Commands::Man(_) => {
+                panic!("expected get command")
+            }
         }
     }
 
@@ -162,7 +173,9 @@ mod tests {
         .expect("expected config command to parse");
         match cli.command {
             Commands::Config(_) => {}
-            Commands::Get(_) | Commands::Completions { .. } => panic!("expected config command"),
+            Commands::Get(_) | Commands::Completions { .. } | Commands::Man(_) => {
+                panic!("expected config command")
+            }
         }
     }
 
@@ -178,7 +191,9 @@ mod tests {
                 | CompletionShell::Powershell
                 | CompletionShell::Elvish => panic!("expected bash shell"),
             },
-            Commands::Get(_) | Commands::Config(_) => panic!("expected completions command"),
+            Commands::Get(_) | Commands::Config(_) | Commands::Man(_) => {
+                panic!("expected completions command")
+            }
         }
     }
 
@@ -232,6 +247,18 @@ mod tests {
         match cli.error_format {
             ErrorFormat::Json => {}
             ErrorFormat::Text => panic!("expected json error format"),
+        }
+    }
+
+    #[test]
+    fn parses_man_subcommand() {
+        let cli = Cli::try_parse_from(["99problems", "man", "--output", "docs/man"])
+            .expect("expected man command to parse");
+        match cli.command {
+            Commands::Man(_) => {}
+            Commands::Get(_) | Commands::Config(_) | Commands::Completions { .. } => {
+                panic!("expected man command")
+            }
         }
     }
 }

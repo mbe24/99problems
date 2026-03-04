@@ -1,96 +1,65 @@
 # 99problems
 
 [![CI](https://github.com/mbe24/99problems/actions/workflows/ci.yml/badge.svg)](https://github.com/mbe24/99problems/actions/workflows/ci.yml)
+[![Man Drift](https://github.com/mbe24/99problems/actions/workflows/man-drift.yml/badge.svg)](https://github.com/mbe24/99problems/actions/workflows/man-drift.yml)
 [![npm](https://img.shields.io/npm/v/@mbe24/99problems?color=7C3AED&label=npm)](https://www.npmjs.com/package/@mbe24/99problems)
 [![crates.io](https://img.shields.io/crates/v/problems99?color=7C3AED&label=crates.io)](https://crates.io/crates/problems99)
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
 [![License Info](http://img.shields.io/badge/license-Apache%20License%20v2.0-orange.svg)](https://raw.githubusercontent.com/mbe24/99problems/main/LICENSE)
 
-> AI-friendly access to issue and PR conversations.
-
-`99problems` is a command-line tool that fetches issue and PR conversations — including all comments — and exports them as structured **JSON** or **YAML**. It uses a GitHub-style search syntax (`repo:`, `state:`, `label:`, etc.) and supports GitHub, GitLab, and Jira.
-
-Built in Rust. Distributed as a single binary via npm and crates.io. No runtime dependencies.
+`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, and Jira, and outputs JSON or YAML.
 
 ## Installation
 
 ```bash
 npm install -g @mbe24/99problems
-```
-
-Or via cargo:
-
-```bash
+# or
 cargo install problems99
 ```
 
-Pre-built binaries are available for Windows x64, Linux x64, Linux ARM64, macOS Intel, and macOS Apple Silicon.
-
-## Usage
+## Quick Start
 
 ```bash
-# Export all closed issues mentioning "Event" to JSON
-99problems get -q "is:issue state:closed Event repo:schemaorg/schemaorg" -o output.json
-
-# Fetch a single issue/PR with all its comments
+# Fetch one GitHub issue
 99problems get --repo schemaorg/schemaorg --id 1842
 
-# Fetch a PR including inline review comments
-99problems get --repo github/gitignore --id 2402 --include-review-comments
+# Fetch one PR with inline review comments
+99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments
 
-# Fetch a GitLab issue
-99problems get --platform gitlab --repo veloren/veloren --id 6
+# Search GitLab issues
+99problems get --platform gitlab -q "repo:veloren/veloren is:issue state:closed terrain"
 
-# Fetch using a configured instance alias
-99problems get --instance work-gitlab --id 46 --type pr
-
-# Fetch a Jira issue by key
+# Fetch Jira issue by key
 99problems get --platform jira --id CLOUD-12817
-
-# Search Jira issues without fetching comments (faster)
-99problems get --platform jira -q "repo:CPQ state:open" --no-comments
-
-# Export open bug issues as YAML
-99problems get -q "state:open label:bug repo:owner/repo" --format yaml
-
-# Pipe into jq for further processing
-99problems get -q "state:closed repo:owner/repo" | jq '.[].title'
 ```
 
-## Output
+## Commands
 
-Each result is a conversation object containing the issue body and all comments:
+```text
+99problems get [OPTIONS]               Fetch issue and pull request conversations
+99problems config <SUBCOMMAND>         Inspect and edit .99problems configuration
+99problems completions <SHELL>         Generate shell completion scripts
+99problems man [OPTIONS]               Generate man pages (stdout or files)
+```
 
-```json
-[
-  {
-    "id": "1842",
-    "title": "Event schema improvements",
-    "body": "Issue body text...",
-    "url": "https://github.com/schemaorg/schemaorg/issues/1842",
-    "state": "closed",
-    "created_at": "2019-04-01T12:00:00Z",
-    "comments": [
-      {
-        "author": "octocat",
-        "body": "Comment text...",
-        "created_at": "2019-04-02T08:00:00Z"
-      }
-    ]
-  }
-]
+Global options:
+
+```text
+-v, --verbose              Increase diagnostics (-v, -vv, -vvv)
+-Q, --quiet                Show errors only
+    --error-format <FMT>   Error output: text|json (default: text)
+-h, --help                 Print help
+-V, --version              Print version
 ```
 
 ## Configuration
 
-`99problems` reads TOML dotfiles so you don't have to repeat flags on every run.
+`99problems` uses instance-based TOML config from:
 
-| File | Purpose |
-|---|---|
-| `~/.99problems` | Global instances |
-| `./.99problems` | Per-project instance overrides |
+- `~/.99problems`
+- `./.99problems`
 
-The runtime config is instance-only:
+Example:
 
 ```toml
 default_instance = "work-gitlab"
@@ -98,7 +67,7 @@ default_instance = "work-gitlab"
 [instances.github]
 platform = "github"
 repo = "owner/repo"
-token = "ghp_your_personal_access_token"
+token = "ghp_your_token"
 
 [instances.work-gitlab]
 platform = "gitlab"
@@ -114,132 +83,32 @@ token = "atlassian_api_token"
 email = "user@example.com"
 ```
 
-Selection order: `--instance` → single configured instance (auto) → `default_instance`.  
-If multiple instances are configured and neither `--instance` nor `default_instance` is set, the command errors.
-If no instances are configured, `99problems` still works in CLI-only mode (`--platform`, `--url`, `--token`, etc.).
+Selection order: `--instance` -> single configured instance -> `default_instance`.
 
-Token is resolved in this order: `--token` flag → `GITHUB_TOKEN`/`GITLAB_TOKEN`/`JIRA_TOKEN`/`BITBUCKET_TOKEN` env var → selected instance token in dotfile.  
-For Jira Atlassian Cloud API tokens, also provide an email via `--jira-email`, `JIRA_EMAIL`, or `[instances.<alias>].email` (or pass `--token` as `email:api_token`).
+## Man Pages
 
-Legacy sections (`[github]`, `[gitlab]`, `[jira]`, `[bitbucket]`) and top-level runtime keys (`platform`, `repo`, `state`, `type`, `per_page`) are not supported.
-
-## Commands
-
-```
-Commands:
-  get (alias: got)      Fetch issue and pull request conversations
-  config                Inspect and edit .99problems configuration
-  completions <SHELL>   Generate shell completion script and print it to stdout
-
-Global options:
-  -h, --help            Print help
-  -V, --version         Print version
-```
-
-## Get options
-
-```
-
-## Config commands
-
-`99problems config` lets you manage `.99problems` without editing TOML manually.
+Generate and print root man page:
 
 ```bash
-# Show config file path for local scope (default)
-99problems config path
-
-# Show merged view (home + local, local wins), masking tokens by default
-99problems config list
-
-# Show one key from resolved scope
-99problems config get instances.work-gitlab.repo
-
-# Set keys in local scope by default
-99problems config set default_instance work-gitlab
-99problems config set instances.work-gitlab.platform gitlab
-99problems config set instances.work-gitlab.url https://gitlab.mycompany.com
-
-# Remove a key (idempotent)
-99problems config unset instances.work-gitlab.state
+99problems man
 ```
 
-Scopes:
-- read commands (`list`, `get`) support `--scope home|local|resolved` (default: `resolved`)
-- write commands (`set`, `unset`) support `--scope home|local` (default: `local`)
-- `resolved` is read-only
-
-Supported key paths:
-- `default_instance`
-- `instances.<alias>.platform`
-- `instances.<alias>.url`
-- `instances.<alias>.token`
-- `instances.<alias>.email`
-- `instances.<alias>.repo`
-- `instances.<alias>.state`
-- `instances.<alias>.type`
-- `instances.<alias>.per_page`
-
-Instance creation rule:
-- a new alias is created only when setting `instances.<alias>.platform`
-- setting other fields on a missing alias returns an error
-
-Secret handling:
-- `list` and `get` mask token values by default
-- pass `--show-secrets` to reveal raw token values
-99problems get [OPTIONS]
-
-Options:
-  -q, --query <QUERY>        Full search query (platform web UI syntax)
-  -r, --repo <REPO>          Shorthand for "repo:owner/name" (alias: --project)
-  -s, --state <STATE>        Shorthand for "state:open|closed"
-  -l, --labels <LABELS>      Comma-separated labels, e.g. "bug,help wanted"
-  -a, --author <AUTHOR>      Filter by issue/PR author
-  -S, --since <DATE>         Only items created on or after YYYY-MM-DD
-  -m, --milestone <NAME>     Filter by milestone title or number
-  -i, --id <ID>              Fetch a single issue/PR by identifier
-                             Alias: --issue
-  -p, --platform <PLATFORM>  Platform adapter: github | gitlab | jira | bitbucket
-  -I, --instance <INSTANCE>  Named instance alias from .99problems
-  -u, --url <URL>            Override platform base URL for one-off runs
-  -t, --type <TYPE>          Content type: issue | pr [default: issue]
-                             In --id mode: defaults to issue; explicit --type disables fallback
-  -R, --include-review-comments
-                             Include pull request review comments (GitHub/GitLab PRs)
-      --no-comments         Skip fetching comments (faster, smaller output)
-  -f, --format <FORMAT>      Output format: json | yaml [default: json]
-  -o, --output <FILE>        Write to file instead of stdout
-  -k, --token <TOKEN>        Personal access token
-      --jira-email <EMAIL>   Jira account email for API-token basic auth
-  -h, --help                 Print help
-  -V, --version              Print version
-```
-
-## Shell completion
-
-Generate a completion script and source/install it in your shell.
+Generate all pages to disk:
 
 ```bash
-# If installed via cargo/npm globally:
+99problems man --output docs/man --section 1
+```
+
+Committed man pages live in `docs/man/`.
+The `Man Drift` workflow verifies generated output stays in sync with committed files.
+
+## Shell Completions
+
+```bash
 99problems completions bash
-
-# Via cargo without installing:
-cargo run -- completions powershell
-
-# Via npm package:
-npx @mbe24/99problems completions zsh
+99problems completions zsh
+99problems completions powershell
 ```
-
-When installed via npm, postinstall will try to auto-install completions for
-`bash`, `zsh`, and `fish` (best effort), and print a message if shell detection
-or auto-install is not possible.
-
-## Use cases
-
-- **LLM context / RAG** — export issue history into a vector store or use as prompt context
-- **Issue triage and analysis** — bulk-process issue trackers with Python, JavaScript, or any data tool
-- **Training data generation** — build labelled datasets from GitHub discussions and bug reports
-- **Changelog and release notes** — extract closed issues for automated release documentation
-- **Knowledge base indexing** — crawl project issue trackers for search and retrieval systems
 
 ## Contributing
 

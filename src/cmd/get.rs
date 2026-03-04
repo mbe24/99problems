@@ -53,6 +53,10 @@ impl ContentType {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    next_line_help = true,
+    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --format yaml"
+)]
 pub(crate) struct GetArgs {
     /// Full search query (same syntax as the platform's web UI search bar)
     /// e.g. "state:closed Event repo:owner/repo"
