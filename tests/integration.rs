@@ -13,9 +13,12 @@ mod tests {
 
     fn github_token() -> Option<String> {
         std::env::var("GITHUB_TOKEN").ok().or_else(|| {
-            problems99::config::Config::load()
-                .ok()
-                .and_then(|c| c.token)
+            problems99::config::Config::load_with_options(problems99::config::ResolveOptions {
+                instance: Some("github"),
+                ..problems99::config::ResolveOptions::default()
+            })
+            .ok()
+            .and_then(|c| c.token)
         })
     }
 
