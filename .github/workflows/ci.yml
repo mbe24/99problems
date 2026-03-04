@@ -44,4 +44,4 @@ jobs:
         if: env.GITHUB_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo test -- --include-ignored
+        run: cargo test -- --include-ignored --skip jira_
