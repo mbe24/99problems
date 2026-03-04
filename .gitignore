@@ -4,6 +4,8 @@
 # Private docs (see docs/ for publishing and deployment guides)
 /docs/npm-publishing.md
 /docs/deployment.md
+plan/
+issue/
 
 # Local config dotfile (may contain tokens)
 .99problems

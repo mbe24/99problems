@@ -9,11 +9,11 @@ const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const PAGE_SIZE: u32 = 100;
 
-pub struct GitHubIssues {
+pub struct GitHubSource {
     client: Client,
 }
 
-impl GitHubIssues {
+impl GitHubSource {
     pub fn new() -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
@@ -110,14 +110,17 @@ impl GitHubIssues {
         item: ConversationSeed,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let mut comments = self.fetch_issue_comments(repo, item.id, req)?;
-        if item.is_pr && req.include_review_comments {
-            comments.extend(self.fetch_review_comments(repo, item.id, req)?);
-            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let mut comments = Vec::new();
+        if req.include_comments {
+            comments = self.fetch_issue_comments(repo, item.id, req)?;
+            if item.is_pr && req.include_review_comments {
+                comments.extend(self.fetch_review_comments(repo, item.id, req)?);
+                comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            }
         }
 
         Ok(Conversation {
-            id: item.id,
+            id: item.id.to_string(),
             title: item.title,
             state: item.state,
             body: item.body,
@@ -192,11 +195,14 @@ impl GitHubIssues {
         &self,
         req: &FetchRequest,
         repo: &str,
-        id: u64,
+        id: &str,
         kind: ContentKind,
         allow_fallback_to_pr: bool,
     ) -> Result<Vec<Conversation>> {
-        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}");
+        let issue_id = id
+            .parse::<u64>()
+            .map_err(|_| anyhow!("GitHub expects a numeric issue/PR id, got '{id}'."))?;
+        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
         let request = Self::apply_auth(self.client.get(&issue_url), &req.token);
         let resp = request.send()?;
         if !resp.status().is_success() {
@@ -212,17 +218,17 @@ impl GitHubIssues {
         match kind {
             ContentKind::Issue if is_pr && !allow_fallback_to_pr => {
                 return Err(anyhow!(
-                    "ID {id} in repo {repo} is a pull request. Use --type pr or omit --type."
+                    "ID {issue_id} in repo {repo} is a pull request. Use --type pr or omit --type."
                 ));
             }
             ContentKind::Issue if is_pr && allow_fallback_to_pr => {
                 eprintln!(
-                    "Warning: --id defaulted to issue, but found PR #{id}; use --type pr for clarity."
+                    "Warning: --id defaulted to issue, but found PR #{issue_id}; use --type pr for clarity."
                 );
             }
             ContentKind::Pr if !is_pr => {
                 return Err(anyhow!(
-                    "ID {id} in repo {repo} is an issue, not a pull request."
+                    "ID {issue_id} in repo {repo} is an issue, not a pull request."
                 ));
             }
             _ => {}
@@ -242,7 +248,7 @@ impl GitHubIssues {
     }
 }
 
-impl Source for GitHubIssues {
+impl Source for GitHubSource {
     fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
         match &req.target {
             FetchTarget::Search { raw_query } => self.search(req, raw_query),
@@ -251,7 +257,7 @@ impl Source for GitHubIssues {
                 id,
                 kind,
                 allow_fallback_to_pr,
-            } => self.fetch_by_id(req, repo, *id, *kind, *allow_fallback_to_pr),
+            } => self.fetch_by_id(req, repo, id, *kind, *allow_fallback_to_pr),
         }
     }
 }

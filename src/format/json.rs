@@ -17,7 +17,7 @@ mod tests {
 
     fn sample() -> Vec<Conversation> {
         vec![Conversation {
-            id: 42,
+            id: "42".into(),
             title: "Test issue".into(),
             state: "closed".into(),
             body: Some("Body text".into()),
@@ -37,7 +37,7 @@ mod tests {
     fn formats_valid_json() {
         let out = JsonFormatter.format(&sample()).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed[0]["id"], 42);
+        assert_eq!(parsed[0]["id"], "42");
         assert_eq!(parsed[0]["title"], "Test issue");
         assert_eq!(parsed[0]["comments"][0]["author"], "user1");
     }

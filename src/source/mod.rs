@@ -1,9 +1,11 @@
 use crate::model::Conversation;
 use anyhow::Result;
 
-pub mod github_issues;
+pub mod github;
+pub mod gitlab;
+pub mod jira;
 
-/// A pluggable data source that fetches issue conversations.
+/// A pluggable data source that fetches issue/PR conversations.
 pub trait Source {
     fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>>;
 }
@@ -21,7 +23,7 @@ pub enum FetchTarget {
     },
     Id {
         repo: String,
-        id: u64,
+        id: String,
         kind: ContentKind,
         allow_fallback_to_pr: bool,
     },
@@ -32,6 +34,8 @@ pub struct FetchRequest {
     pub target: FetchTarget,
     pub per_page: u32,
     pub token: Option<String>,
+    pub jira_email: Option<String>,
+    pub include_comments: bool,
     pub include_review_comments: bool,
 }
 

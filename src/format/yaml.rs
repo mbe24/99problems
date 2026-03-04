@@ -17,7 +17,7 @@ mod tests {
 
     fn sample() -> Vec<Conversation> {
         vec![Conversation {
-            id: 7,
+            id: "7".into(),
             title: "YAML issue".into(),
             state: "open".into(),
             body: None,
@@ -36,8 +36,9 @@ mod tests {
     #[test]
     fn formats_valid_yaml() {
         let out = YamlFormatter.format(&sample()).unwrap();
-        assert!(out.contains("title: YAML issue"));
-        assert!(out.contains("id: 7"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed[0]["title"], "YAML issue");
+        assert_eq!(parsed[0]["id"], "7");
     }
 
     #[test]

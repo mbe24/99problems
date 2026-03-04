@@ -1,14 +1,18 @@
-/// Integration tests — require a live GitHub API token.
-/// Run with: GITHUB_TOKEN=ghp_... cargo test -- --include-ignored
+/// Integration tests — live network tests for GitHub + GitLab + Jira.
+/// Run with: cargo test -- --include-ignored
+/// Optional env vars for higher-rate/authenticated calls:
+/// - GITHUB_TOKEN=...
+/// - GITLAB_TOKEN=...
+/// - JIRA_TOKEN=...
 
 #[cfg(test)]
 mod tests {
     use problems99::source::{
-        ContentKind, FetchRequest, FetchTarget, Source, github_issues::GitHubIssues,
+        ContentKind, FetchRequest, FetchTarget, Source, github::GitHubSource, gitlab::GitLabSource,
+        jira::JiraSource,
     };
 
-    fn token() -> Option<String> {
-        // Prefer env var, fall back to dotfile config (same resolution as the binary)
+    fn github_token() -> Option<String> {
         std::env::var("GITHUB_TOKEN").ok().or_else(|| {
             problems99::config::Config::load()
                 .ok()
@@ -16,46 +20,73 @@ mod tests {
         })
     }
 
-    fn req_id(repo: &str, id: u64, include_review_comments: bool) -> FetchRequest {
+    fn gitlab_token() -> Option<String> {
+        std::env::var("GITLAB_TOKEN").ok()
+    }
+
+    fn jira_token() -> Option<String> {
+        std::env::var("JIRA_TOKEN").ok()
+    }
+
+    fn is_public_jira_login_wall(err: &str) -> bool {
+        err.contains("non-JSON content-type 'text/html'")
+            && (err.contains("auth/login page")
+                || err.contains("login.jsp?permissionViolation")
+                || err.contains("id-frontend.prod-east.frontend.public.atl-paas.net"))
+    }
+
+    fn fail_public_jira_login_wall(test_name: &str, msg: &str) -> ! {
+        panic!(
+            "{test_name}: public Jira endpoint returned a login/auth wall instead of JSON. \
+             This indicates external endpoint/auth drift (not an adapter parsing bug). \
+             Response details: {msg}"
+        )
+    }
+
+    fn req_id(repo: &str, id: &str, include_review_comments: bool) -> FetchRequest {
         FetchRequest {
             target: FetchTarget::Id {
                 repo: repo.to_string(),
-                id,
+                id: id.to_string(),
                 kind: ContentKind::Issue,
                 allow_fallback_to_pr: true,
             },
             per_page: 100,
-            token: token(),
+            token: github_token(),
+            jira_email: None,
+            include_comments: true,
             include_review_comments,
         }
     }
 
     fn req_id_with_kind(
         repo: &str,
-        id: u64,
+        id: &str,
         kind: ContentKind,
         allow_fallback_to_pr: bool,
     ) -> FetchRequest {
         FetchRequest {
             target: FetchTarget::Id {
                 repo: repo.to_string(),
-                id,
+                id: id.to_string(),
                 kind,
                 allow_fallback_to_pr,
             },
             per_page: 100,
-            token: token(),
+            token: github_token(),
+            jira_email: None,
+            include_comments: true,
             include_review_comments: false,
         }
     }
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_known_issue_1842() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id("schemaorg/schemaorg", 1842, false);
+    fn github_fetch_known_issue_1842() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id("schemaorg/schemaorg", "1842", false);
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
-        assert_eq!(conv.id, 1842);
+        assert_eq!(conv.id, "1842");
         assert_eq!(conv.title, "Online-only events");
         assert_eq!(conv.state, "closed");
         assert!(conv.body.is_some());
@@ -64,14 +95,16 @@ mod tests {
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn search_returns_results() {
-        let source = GitHubIssues::new().unwrap();
+    fn github_search_returns_results() {
+        let source = GitHubSource::new().unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "is:issue state:closed EventSeries repo:schemaorg/schemaorg".into(),
             },
             per_page: 10,
-            token: token(),
+            token: github_token(),
+            jira_email: None,
+            include_comments: true,
             include_review_comments: false,
         };
         let results = source.fetch(&req).unwrap();
@@ -84,9 +117,9 @@ mod tests {
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_one_comment_has_author_and_body() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id("schemaorg/schemaorg", 1842, false);
+    fn github_fetch_one_comment_has_author_and_body() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id("schemaorg/schemaorg", "1842", false);
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
         let first = conv
             .comments
@@ -98,12 +131,12 @@ mod tests {
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_pr_2402_default_issue_comments_only() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id("github/gitignore", 2402, false);
+    fn github_fetch_pr_2402_default_issue_comments_only() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id("github/gitignore", "2402", false);
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
 
-        assert_eq!(conv.id, 2402);
+        assert_eq!(conv.id, "2402");
         assert!(!conv.title.is_empty());
         assert!(!conv.state.is_empty());
         assert!(!conv.comments.is_empty());
@@ -117,12 +150,12 @@ mod tests {
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_pr_2402_with_review_comments() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id("github/gitignore", 2402, true);
+    fn github_fetch_pr_2402_with_review_comments() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id("github/gitignore", "2402", true);
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
 
-        assert_eq!(conv.id, 2402);
+        assert_eq!(conv.id, "2402");
         assert!(
             conv.comments
                 .iter()
@@ -133,36 +166,197 @@ mod tests {
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn search_pr_query_includes_2402() {
-        let source = GitHubIssues::new().unwrap();
+    fn github_search_pr_query_includes_2402() {
+        let source = GitHubSource::new().unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "repo:github/gitignore is:pr 2402".into(),
             },
             per_page: 10,
-            token: token(),
+            token: github_token(),
+            jira_email: None,
+            include_comments: true,
             include_review_comments: false,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
-        assert!(results.iter().any(|c| c.id == 2402));
+        assert!(results.iter().any(|c| c.id == "2402"));
     }
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_issue_as_pr_errors_when_kind_is_explicit() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id_with_kind("schemaorg/schemaorg", 1842, ContentKind::Pr, false);
+    fn github_fetch_issue_as_pr_errors_when_kind_is_explicit() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr, false);
         let err = source.fetch(&req).unwrap_err().to_string();
         assert!(err.contains("not a pull request"));
     }
 
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
-    fn fetch_pr_as_issue_errors_when_fallback_is_disabled() {
-        let source = GitHubIssues::new().unwrap();
-        let req = req_id_with_kind("github/gitignore", 2402, ContentKind::Issue, false);
+    fn github_fetch_pr_as_issue_errors_when_fallback_is_disabled() {
+        let source = GitHubSource::new().unwrap();
+        let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue, false);
         let err = source.fetch(&req).unwrap_err().to_string();
         assert!(err.contains("is a pull request"));
+    }
+
+    #[test]
+    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    fn gitlab_fetch_issue_6() {
+        let source = GitLabSource::new(None).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: "veloren/veloren".into(),
+                id: "6".into(),
+                kind: ContentKind::Issue,
+                allow_fallback_to_pr: true,
+            },
+            per_page: 50,
+            token: gitlab_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: false,
+        };
+        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        assert_eq!(conv.id, "6");
+        assert!(!conv.title.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    fn gitlab_fetch_mr_6() {
+        let source = GitLabSource::new(None).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: "veloren/veloren".into(),
+                id: "6".into(),
+                kind: ContentKind::Pr,
+                allow_fallback_to_pr: false,
+            },
+            per_page: 50,
+            token: gitlab_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: true,
+        };
+        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        assert_eq!(conv.id, "6");
+        assert!(!conv.title.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    fn gitlab_search_issue_results() {
+        let source = GitLabSource::new(None).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Search {
+                raw_query: "repo:veloren/veloren is:issue state:closed terrain".into(),
+            },
+            per_page: 10,
+            token: gitlab_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: false,
+        };
+        let results = source.fetch(&req).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    fn gitlab_search_mr_results() {
+        let source = GitLabSource::new(None).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Search {
+                raw_query: "repo:veloren/veloren is:pr state:closed netcode".into(),
+            },
+            per_page: 10,
+            token: gitlab_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: true,
+        };
+        let results = source.fetch(&req).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network (public Jira endpoint)"]
+    fn jira_fetch_public_issue_cloud_12817() {
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: String::new(),
+                id: "CLOUD-12817".into(),
+                kind: ContentKind::Issue,
+                allow_fallback_to_pr: false,
+            },
+            per_page: 50,
+            token: jira_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: false,
+        };
+        let conv = match source.fetch(&req) {
+            Ok(results) => results.into_iter().next().unwrap(),
+            Err(err) => {
+                let msg = err.to_string();
+                if is_public_jira_login_wall(&msg) {
+                    fail_public_jira_login_wall("jira_fetch_public_issue_cloud_12817", &msg);
+                }
+                panic!("unexpected Jira issue fetch error: {msg}");
+            }
+        };
+        assert_eq!(conv.id, "CLOUD-12817");
+        assert!(!conv.title.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network (public Jira endpoint)"]
+    fn jira_search_public_project() {
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Search {
+                raw_query: "repo:CLOUD state:closed CLOUD-12817".into(),
+            },
+            per_page: 5,
+            token: jira_token(),
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: false,
+        };
+        let results = match source.fetch(&req) {
+            Ok(results) => results,
+            Err(err) => {
+                let msg = err.to_string();
+                if is_public_jira_login_wall(&msg) {
+                    fail_public_jira_login_wall("jira_search_public_project", &msg);
+                }
+                panic!("unexpected Jira search error: {msg}");
+            }
+        };
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|c| c.id == "CLOUD-12817"));
+    }
+
+    #[test]
+    fn jira_rejects_pr_kind() {
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: String::new(),
+                id: "CLOUD-12817".into(),
+                kind: ContentKind::Pr,
+                allow_fallback_to_pr: false,
+            },
+            per_page: 5,
+            token: None,
+            jira_email: None,
+            include_comments: true,
+            include_review_comments: false,
+        };
+        let err = source.fetch(&req).unwrap_err().to_string();
+        assert!(err.contains("does not support pull requests"));
     }
 }
