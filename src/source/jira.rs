@@ -4,6 +4,7 @@ use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::{debug, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::model::{Comment, Conversation};
@@ -116,6 +117,7 @@ impl JiraSource {
 
         loop {
             let url = format!("{}/rest/api/3/issue/{issue_key}/comment", self.base_url);
+            debug!(issue_key, start_at, per_page, "fetching Jira comment page");
             let http = Self::apply_auth(
                 self.client.get(&url),
                 req.token.as_deref(),
@@ -132,6 +134,11 @@ impl JiraSource {
                 req.jira_email.as_deref(),
                 "comment fetch",
             )?;
+            trace!(
+                count = page.comments.len(),
+                start_at = page.start_at,
+                "decoded Jira comments page"
+            );
 
             for c in page.comments {
                 let body = extract_adf_text(&c.body);
@@ -171,6 +178,12 @@ impl JiraSource {
 
         loop {
             let url = format!("{}/rest/api/3/search/jql", self.base_url);
+            debug!(
+                start_at,
+                per_page,
+                has_next_page_token = next_page_token.is_some(),
+                "fetching Jira search page"
+            );
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
                 ("maxResults".into(), per_page.to_string()),
@@ -195,6 +208,7 @@ impl JiraSource {
                 req.jira_email.as_deref(),
                 "search",
             )?;
+            trace!(count = page.issues.len(), "decoded Jira search page");
             for issue in page.issues {
                 let comments = if req.include_comments {
                     self.fetch_comments(&issue.key, req)?

@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
+use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::model::{Comment, Conversation};
@@ -51,6 +52,7 @@ impl GitHubSource {
         let per_page = Self::bounded_per_page(per_page);
 
         loop {
+            debug!(url = %url, page, per_page, "fetching GitHub page");
             let req = self.client.get(url).query(&[
                 ("per_page", per_page.to_string()),
                 ("page", page.to_string()),
@@ -73,6 +75,7 @@ impl GitHubSource {
                 .is_some_and(|l| l.contains(r#"rel="next""#));
 
             let items: Vec<T> = resp.json()?;
+            trace!(count = items.len(), page, "decoded GitHub page");
             let done = items.is_empty() || !has_next;
             results.extend(items);
             if done {
@@ -139,6 +142,7 @@ impl GitHubSource {
         let per_page = Self::bounded_per_page(req.per_page);
 
         loop {
+            debug!(page, per_page, "fetching GitHub search page");
             let req_http = self.client.get(&search_url).query(&[
                 ("q", raw_query),
                 ("per_page", &per_page.to_string()),
@@ -156,6 +160,10 @@ impl GitHubSource {
             }
 
             let search: SearchResponse = resp.json()?;
+            trace!(
+                count = search.items.len(),
+                page, "decoded GitHub search page"
+            );
             let done = search.items.len() < per_page as usize;
             all_items.extend(search.items);
             if done {
@@ -226,7 +234,7 @@ impl GitHubSource {
                 ));
             }
             ContentKind::Issue if is_pr && allow_fallback_to_pr => {
-                eprintln!(
+                warn!(
                     "Warning: --id defaulted to issue, but found PR #{issue_id}; use --type pr for clarity."
                 );
             }

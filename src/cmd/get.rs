@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use clap::{Args, ValueEnum};
 use std::io::Write;
+use tracing::{debug, info, warn};
 
 use crate::config::{Config, ResolveOptions, token_env_var};
 use crate::format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
@@ -134,10 +135,22 @@ pub(crate) struct GetArgs {
 /// or output writing fails.
 pub(crate) fn run(args: &GetArgs) -> Result<()> {
     let cfg = load_config_for_get(args)?;
+    debug!(
+        platform = %cfg.platform,
+        kind = %cfg.kind,
+        include_comments = !args.no_comments,
+        include_review_comments = args.include_review_comments,
+        "resolved get configuration"
+    );
     emit_get_warnings(&cfg, args)?;
 
     let source = build_source_for_platform(&cfg)?;
     let conversations = fetch_get_conversations(source.as_ref(), &cfg, args)?;
+    info!(
+        platform = %cfg.platform,
+        count = conversations.len(),
+        "fetched conversations"
+    );
     write_formatted_output(args.format, args.output.as_deref(), &conversations)
 }
 
@@ -169,7 +182,7 @@ fn load_config_for_get(args: &GetArgs) -> Result<Config> {
 fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     if cfg.token.is_none() {
         let env_var = token_env_var(&cfg.platform);
-        eprintln!(
+        warn!(
             "Warning: no token detected for {}. You may be subject to API rate limiting. Set --token, {}, or configure it in .99problems.",
             cfg.platform, env_var
         );
@@ -179,12 +192,12 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
         && looks_like_atlassian_api_token(token)
         && cfg.jira_email.is_none()
     {
-        eprintln!(
+        warn!(
             "Warning: Jira token looks like an Atlassian API token. Configure --jira-email, JIRA_EMAIL, or [instances.<alias>].email, or provide --token as email:api_token."
         );
     }
     if args.no_comments && args.include_review_comments {
-        eprintln!("Warning: --include-review-comments is ignored when --no-comments is set.");
+        warn!("Warning: --include-review-comments is ignored when --no-comments is set.");
     }
     if cfg.platform == "jira" && cfg.kind == "pr" {
         return Err(anyhow!(
@@ -227,7 +240,7 @@ fn fetch_get_by_id(
 ) -> Result<Vec<Conversation>> {
     let ignored_flags = ignored_flags_in_id_mode(args);
     if !ignored_flags.is_empty() {
-        eprintln!(
+        warn!(
             "Warning: when using --id/--issue, these flags are ignored: {}",
             ignored_flags.join(", ")
         );
@@ -340,7 +353,7 @@ fn write_formatted_output(
         Some(path) => {
             let mut file = std::fs::File::create(path)?;
             file.write_all(output.as_bytes())?;
-            eprintln!("Wrote {} conversations to {path}", conversations.len());
+            info!(count = conversations.len(), path = %path, "wrote conversations to file");
         }
         None => println!("{output}"),
     }
