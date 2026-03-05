@@ -7,13 +7,33 @@ pub mod jira;
 
 /// A pluggable data source that fetches issue/PR conversations.
 pub trait Source {
-    /// Fetch issue or pull request conversations for a request target.
+    /// Fetch issue or pull request conversations for a request target and emit
+    /// each conversation incrementally.
     ///
     /// # Errors
     ///
     /// Returns an error when request validation fails, authentication fails,
     /// or the remote platform returns a non-success/invalid response.
-    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>>;
+    fn fetch_stream(
+        &self,
+        req: &FetchRequest,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize>;
+
+    /// Fetch all conversations and collect them into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request validation fails, authentication fails,
+    /// remote calls fail, or emitted conversations cannot be collected.
+    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+        let mut conversations = Vec::new();
+        self.fetch_stream(req, &mut |conversation| {
+            conversations.push(conversation);
+            Ok(())
+        })?;
+        Ok(conversations)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -143,11 +143,17 @@ impl GitHubSource {
         })
     }
 
-    fn search(&self, req: &FetchRequest, raw_query: &str) -> Result<Vec<Conversation>> {
+    fn search_stream(
+        &self,
+        req: &FetchRequest,
+        raw_query: &str,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         let search_url = format!("{GITHUB_API_BASE}/search/issues");
         let mut page = 1u32;
-        let mut all_items: Vec<SearchItem> = vec![];
+        let mut emitted = 0usize;
         let per_page = Self::bounded_per_page(req.per_page);
+        let repo_from_query = extract_repo(raw_query);
 
         loop {
             debug!(page, per_page, "fetching GitHub search page");
@@ -175,17 +181,7 @@ impl GitHubSource {
                 page, "decoded GitHub search page"
             );
             let done = search.items.len() < per_page as usize;
-            all_items.extend(search.items);
-            if done {
-                break;
-            }
-            page += 1;
-        }
-
-        let repo_from_query = extract_repo(raw_query);
-        all_items
-            .into_iter()
-            .map(|item| {
+            for item in search.items {
                 let repo = item
                     .repository_url
                     .as_deref()
@@ -198,7 +194,7 @@ impl GitHubSource {
                         ))
                     })?;
 
-                self.fetch_conversation(
+                let conversation = self.fetch_conversation(
                     &repo,
                     ConversationSeed {
                         id: item.number,
@@ -208,19 +204,28 @@ impl GitHubSource {
                         is_pr: item.pull_request.is_some(),
                     },
                     req,
-                )
-            })
-            .collect()
+                )?;
+                emit(conversation)?;
+                emitted += 1;
+            }
+            if done {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(emitted)
     }
 
-    fn fetch_by_id(
+    fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
         id: &str,
         kind: ContentKind,
         allow_fallback_to_pr: bool,
-    ) -> Result<Vec<Conversation>> {
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         let issue_id = id.parse::<u64>().map_err(|_| {
             AppError::usage(format!("GitHub expects a numeric issue/PR id, got '{id}'."))
         })?;
@@ -260,7 +265,7 @@ impl GitHubSource {
             _ => {}
         }
 
-        Ok(vec![self.fetch_conversation(
+        let conversation = self.fetch_conversation(
             repo,
             ConversationSeed {
                 id: issue.number,
@@ -270,20 +275,26 @@ impl GitHubSource {
                 is_pr,
             },
             req,
-        )?])
+        )?;
+        emit(conversation)?;
+        Ok(1)
     }
 }
 
 impl Source for GitHubSource {
-    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+    fn fetch_stream(
+        &self,
+        req: &FetchRequest,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search(req, raw_query),
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
             FetchTarget::Id {
                 repo,
                 id,
                 kind,
                 allow_fallback_to_pr,
-            } => self.fetch_by_id(req, repo, id, *kind, *allow_fallback_to_pr),
+            } => self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit),
         }
     }
 }

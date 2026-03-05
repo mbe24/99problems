@@ -63,6 +63,31 @@ impl GitLabSource {
         allow_unauthenticated_empty: bool,
     ) -> Result<Vec<T>> {
         let mut results = vec![];
+        self.get_pages_stream(
+            url,
+            params,
+            token,
+            per_page,
+            allow_unauthenticated_empty,
+            &mut |item| {
+                results.push(item);
+                Ok(())
+            },
+        )?;
+        Ok(results)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn get_pages_stream<T: for<'de> Deserialize<'de>>(
+        &self,
+        url: &str,
+        params: &[(String, String)],
+        token: Option<&str>,
+        per_page: u32,
+        allow_unauthenticated_empty: bool,
+        emit: &mut dyn FnMut(T) -> Result<()>,
+    ) -> Result<usize> {
+        let mut emitted = 0usize;
         let mut page = 1u32;
         let per_page = Self::bounded_per_page(per_page);
 
@@ -81,7 +106,7 @@ impl GitLabSource {
                     && token.is_none()
                     && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
                 {
-                    return Ok(vec![]);
+                    return Ok(0);
                 }
                 if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
                     let body = resp.text()?;
@@ -115,7 +140,10 @@ impl GitLabSource {
                 .json()
                 .map_err(|err| app_error_from_decode("GitLab", "page fetch", err))?;
             trace!(count = items.len(), page, "decoded GitLab page");
-            results.extend(items);
+            for item in items {
+                emit(item)?;
+                emitted += 1;
+            }
 
             if next_page.is_empty() {
                 break;
@@ -124,7 +152,7 @@ impl GitLabSource {
             page = next_page.parse::<u32>().unwrap_or(page + 1);
         }
 
-        Ok(results)
+        Ok(emitted)
     }
 
     fn get_one<T: for<'de> Deserialize<'de>>(
@@ -248,7 +276,12 @@ impl GitLabSource {
         })
     }
 
-    fn search(&self, req: &FetchRequest, raw_query: &str) -> Result<Vec<Conversation>> {
+    fn search_stream(
+        &self,
+        req: &FetchRequest,
+        raw_query: &str,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         let filters = parse_gitlab_query(raw_query);
         let repo = filters
             .repo
@@ -261,16 +294,19 @@ impl GitLabSource {
             .to_string();
         let project = encode_project_path(&repo);
         let params = build_search_params(&filters);
+        let mut emitted = 0usize;
 
         match filters.kind {
             ContentKind::Issue => {
                 let url = format!("{}/api/v4/projects/{project}/issues", self.base_url);
-                let issues: Vec<GitLabIssueItem> =
-                    self.get_pages(&url, &params, req.token.as_deref(), req.per_page, false)?;
-                issues
-                    .into_iter()
-                    .map(|i| {
-                        self.fetch_conversation(
+                self.get_pages_stream(
+                    &url,
+                    &params,
+                    req.token.as_deref(),
+                    req.per_page,
+                    false,
+                    &mut |i: GitLabIssueItem| {
+                        let conversation = self.fetch_conversation(
                             &repo,
                             ConversationSeed {
                                 id: i.iid,
@@ -280,17 +316,23 @@ impl GitLabSource {
                                 is_pr: false,
                             },
                             req,
-                        )
-                    })
-                    .collect()
+                        )?;
+                        emit(conversation)?;
+                        emitted += 1;
+                        Ok(())
+                    },
+                )?;
             }
             ContentKind::Pr => {
                 let url = format!("{}/api/v4/projects/{project}/merge_requests", self.base_url);
-                let mrs: Vec<GitLabMergeRequestItem> =
-                    self.get_pages(&url, &params, req.token.as_deref(), req.per_page, false)?;
-                mrs.into_iter()
-                    .map(|mr| {
-                        self.fetch_conversation(
+                self.get_pages_stream(
+                    &url,
+                    &params,
+                    req.token.as_deref(),
+                    req.per_page,
+                    false,
+                    &mut |mr: GitLabMergeRequestItem| {
+                        let conversation = self.fetch_conversation(
                             &repo,
                             ConversationSeed {
                                 id: mr.iid,
@@ -300,11 +342,15 @@ impl GitLabSource {
                                 is_pr: true,
                             },
                             req,
-                        )
-                    })
-                    .collect()
+                        )?;
+                        emit(conversation)?;
+                        emitted += 1;
+                        Ok(())
+                    },
+                )?;
             }
         }
+        Ok(emitted)
     }
 
     fn fetch_issue_by_iid(
@@ -332,21 +378,22 @@ impl GitLabSource {
         self.get_one(&url, token)
     }
 
-    fn fetch_by_id(
+    fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
         id: &str,
         kind: ContentKind,
         allow_fallback_to_pr: bool,
-    ) -> Result<Vec<Conversation>> {
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         let iid = id.parse::<u64>().map_err(|_| {
             AppError::usage(format!("GitLab expects a numeric issue/MR id, got '{id}'."))
         })?;
         match kind {
             ContentKind::Issue => {
                 if let Some(issue) = self.fetch_issue_by_iid(repo, iid, req.token.as_deref())? {
-                    return Ok(vec![self.fetch_conversation(
+                    let conversation = self.fetch_conversation(
                         repo,
                         ConversationSeed {
                             id: issue.iid,
@@ -356,7 +403,9 @@ impl GitLabSource {
                             is_pr: false,
                         },
                         req,
-                    )?]);
+                    )?;
+                    emit(conversation)?;
+                    return Ok(1);
                 }
 
                 if allow_fallback_to_pr
@@ -365,7 +414,7 @@ impl GitLabSource {
                     warn!(
                         "Warning: --id defaulted to issue, but found MR !{iid}; use --type pr for clarity."
                     );
-                    return Ok(vec![self.fetch_conversation(
+                    let conversation = self.fetch_conversation(
                         repo,
                         ConversationSeed {
                             id: mr.iid,
@@ -375,14 +424,16 @@ impl GitLabSource {
                             is_pr: true,
                         },
                         req,
-                    )?]);
+                    )?;
+                    emit(conversation)?;
+                    return Ok(1);
                 }
 
                 Err(AppError::not_found(format!("Issue #{iid} not found in repo {repo}.")).into())
             }
             ContentKind::Pr => {
                 if let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())? {
-                    return Ok(vec![self.fetch_conversation(
+                    let conversation = self.fetch_conversation(
                         repo,
                         ConversationSeed {
                             id: mr.iid,
@@ -392,7 +443,9 @@ impl GitLabSource {
                             is_pr: true,
                         },
                         req,
-                    )?]);
+                    )?;
+                    emit(conversation)?;
+                    return Ok(1);
                 }
 
                 if self
@@ -415,15 +468,19 @@ impl GitLabSource {
 }
 
 impl Source for GitLabSource {
-    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+    fn fetch_stream(
+        &self,
+        req: &FetchRequest,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search(req, raw_query),
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
             FetchTarget::Id {
                 repo,
                 id,
                 kind,
                 allow_fallback_to_pr,
-            } => self.fetch_by_id(req, repo, id, *kind, *allow_fallback_to_pr),
+            } => self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit),
         }
     }
 }

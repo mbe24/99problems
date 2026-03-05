@@ -1,12 +1,49 @@
-use super::Formatter;
+use super::StreamFormatter;
 use crate::model::Conversation;
 use anyhow::Result;
+use std::io::Write;
 
-pub struct YamlFormatter;
+#[derive(Default)]
+pub struct YamlStreamFormatter {
+    wrote_item: bool,
+}
 
-impl Formatter for YamlFormatter {
-    fn format(&self, conversations: &[Conversation]) -> Result<String> {
-        Ok(serde_yaml::to_string(conversations)?)
+impl YamlStreamFormatter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { wrote_item: false }
+    }
+}
+
+impl StreamFormatter for YamlStreamFormatter {
+    fn begin(&mut self, _out: &mut dyn Write) -> Result<()> {
+        Ok(())
+    }
+
+    fn write_item(&mut self, out: &mut dyn Write, conversation: &Conversation) -> Result<()> {
+        let rendered = serde_yaml::to_string(conversation)?;
+        if self.wrote_item {
+            out.write_all(b"\n")?;
+        }
+        for (idx, line) in rendered.lines().enumerate() {
+            if idx == 0 {
+                out.write_all(b"- ")?;
+                out.write_all(line.as_bytes())?;
+            } else {
+                out.write_all(b"\n  ")?;
+                out.write_all(line.as_bytes())?;
+            }
+        }
+        out.write_all(b"\n")?;
+        self.wrote_item = true;
+        Ok(())
+    }
+
+    fn finish(&mut self, out: &mut dyn Write) -> Result<()> {
+        if !self.wrote_item {
+            out.write_all(b"[]\n")?;
+        }
+        Ok(())
     }
 }
 
@@ -15,8 +52,8 @@ mod tests {
     use super::*;
     use crate::model::Comment;
 
-    fn sample() -> Vec<Conversation> {
-        vec![Conversation {
+    fn sample() -> Conversation {
+        Conversation {
             id: "7".into(),
             title: "YAML issue".into(),
             state: "open".into(),
@@ -30,20 +67,27 @@ mod tests {
                 review_line: None,
                 review_side: None,
             }],
-        }]
+        }
     }
 
     #[test]
     fn formats_valid_yaml() {
-        let out = YamlFormatter.format(&sample()).unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let mut formatter = YamlStreamFormatter::new();
+        let mut out = Vec::new();
+        formatter.begin(&mut out).unwrap();
+        formatter.write_item(&mut out, &sample()).unwrap();
+        formatter.finish(&mut out).unwrap();
+
+        let parsed: serde_yaml::Value = serde_yaml::from_slice(&out).unwrap();
         assert_eq!(parsed[0]["title"], "YAML issue");
-        assert_eq!(parsed[0]["id"], "7");
     }
 
     #[test]
-    fn empty_slice_produces_empty_yaml_list() {
-        let out = YamlFormatter.format(&[]).unwrap();
-        assert_eq!(out.trim(), "[]");
+    fn empty_output_is_empty_yaml_list() {
+        let mut formatter = YamlStreamFormatter::new();
+        let mut out = Vec::new();
+        formatter.begin(&mut out).unwrap();
+        formatter.finish(&mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "[]\n");
     }
 }

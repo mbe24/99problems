@@ -1,12 +1,14 @@
 use anyhow::Result;
 use clap::{Args, ValueEnum};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use tracing::{debug, info, warn};
 
 use crate::config::{Config, ResolveOptions, token_env_var};
 use crate::error::AppError;
-use crate::format::{Formatter, json::JsonFormatter, yaml::YamlFormatter};
-use crate::model::Conversation;
+use crate::format::{
+    StreamFormatter, json::JsonStreamFormatter, jsonl::JsonLinesFormatter, text::TextFormatter,
+    yaml::YamlStreamFormatter,
+};
 use crate::source::{
     ContentKind, FetchRequest, FetchTarget, Query, Source, github::GitHubSource,
     gitlab::GitLabSource, jira::JiraSource,
@@ -16,6 +18,16 @@ use crate::source::{
 pub(crate) enum OutputFormat {
     Json,
     Yaml,
+    Jsonl,
+    Ndjson,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum OutputMode {
+    Auto,
+    Batch,
+    Stream,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq)]
@@ -52,10 +64,30 @@ impl ContentType {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ResolvedOutputMode {
+    Batch,
+    Stream,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResolvedOutputFormat {
+    Json,
+    Yaml,
+    Jsonl,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutputPlan {
+    mode: ResolvedOutputMode,
+    format: ResolvedOutputFormat,
+}
+
 #[derive(Args, Debug)]
 #[command(
     next_line_help = true,
-    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --format yaml"
+    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --output-mode stream --format jsonl"
 )]
 pub(crate) struct GetArgs {
     /// Full search query (same syntax as the platform's web UI search bar)
@@ -107,9 +139,17 @@ pub(crate) struct GetArgs {
     #[arg(short = 't', long = "type", value_enum)]
     pub(crate) kind: Option<ContentType>,
 
-    /// Output format
-    #[arg(short = 'f', long, value_enum, default_value = "json")]
-    pub(crate) format: OutputFormat,
+    /// Output format (default: text for TTY, jsonl for piped/file output)
+    #[arg(short = 'f', long, value_enum)]
+    pub(crate) format: Option<OutputFormat>,
+
+    /// Output behavior mode
+    #[arg(long, value_enum)]
+    pub(crate) output_mode: Option<OutputMode>,
+
+    /// Shorthand for --output-mode stream
+    #[arg(long, conflicts_with = "output_mode")]
+    pub(crate) stream: bool,
 
     /// Include pull request review comments (inline code comments)
     #[arg(short = 'R', long)]
@@ -140,23 +180,35 @@ pub(crate) struct GetArgs {
 /// or output writing fails.
 pub(crate) fn run(args: &GetArgs) -> Result<()> {
     let cfg = load_config_for_get(args)?;
+    emit_get_warnings(&cfg, args)?;
+
+    let source = build_source_for_platform(&cfg)?;
+    let req = build_fetch_request(&cfg, args)?;
+    let output_plan = resolve_output_plan(args);
     debug!(
         platform = %cfg.platform,
         kind = %cfg.kind,
         include_comments = !args.no_comments,
         include_review_comments = args.include_review_comments,
+        output_mode = ?output_plan.mode,
+        output_format = ?output_plan.format,
         "resolved get configuration"
     );
-    emit_get_warnings(&cfg, args)?;
 
-    let source = build_source_for_platform(&cfg)?;
-    let conversations = fetch_get_conversations(source.as_ref(), &cfg, args)?;
-    info!(
-        platform = %cfg.platform,
-        count = conversations.len(),
-        "fetched conversations"
-    );
-    write_formatted_output(args.format, args.output.as_deref(), &conversations)
+    match output_plan.mode {
+        ResolvedOutputMode::Batch => write_batch_output(
+            source.as_ref(),
+            &req,
+            output_plan.format,
+            args.output.as_deref(),
+        ),
+        ResolvedOutputMode::Stream => write_stream_output(
+            source.as_ref(),
+            &req,
+            output_plan.format,
+            args.output.as_deref(),
+        ),
+    }
 }
 
 fn load_config_for_get(args: &GetArgs) -> Result<Config> {
@@ -222,62 +274,76 @@ fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
     }
 }
 
-fn fetch_get_conversations(
-    source: &dyn Source,
-    cfg: &Config,
-    args: &GetArgs,
-) -> Result<Vec<Conversation>> {
+fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     let repo = cfg.repo.clone();
     let state = cfg.state.clone();
 
     if let Some(id) = &args.id {
-        return fetch_get_by_id(source, cfg, args, repo, id);
+        let ignored_flags = ignored_flags_in_id_mode(args);
+        if !ignored_flags.is_empty() {
+            warn!(
+                "Warning: when using --id/--issue, these flags are ignored: {}",
+                ignored_flags.join(", ")
+            );
+        }
+
+        let id_kind = if cfg.kind == "pr" {
+            ContentKind::Pr
+        } else {
+            ContentKind::Issue
+        };
+        let kind_explicit = args.kind.is_some() || cfg.kind == "pr";
+
+        let repo_for_id = if cfg.platform == "jira" {
+            repo.unwrap_or_default()
+        } else {
+            repo.ok_or_else(|| AppError::usage("--repo is required when using --id/--issue"))?
+        };
+
+        return Ok(FetchRequest {
+            target: FetchTarget::Id {
+                repo: repo_for_id,
+                id: id.clone(),
+                kind: id_kind,
+                allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
+            },
+            per_page: cfg.per_page,
+            token: cfg.token.clone(),
+            jira_email: cfg.jira_email.clone(),
+            include_comments: !args.no_comments,
+            include_review_comments: args.include_review_comments,
+        });
     }
 
-    fetch_get_by_search(source, cfg, args, repo, state)
-}
-
-fn fetch_get_by_id(
-    source: &dyn Source,
-    cfg: &Config,
-    args: &GetArgs,
-    repo: Option<String>,
-    id: &str,
-) -> Result<Vec<Conversation>> {
-    let ignored_flags = ignored_flags_in_id_mode(args);
-    if !ignored_flags.is_empty() {
-        warn!(
-            "Warning: when using --id/--issue, these flags are ignored: {}",
-            ignored_flags.join(", ")
-        );
+    let query = Query::build(
+        args.query.clone(),
+        &cfg.kind,
+        repo,
+        state,
+        args.labels.clone(),
+        args.author.clone(),
+        args.since.clone(),
+        args.milestone.clone(),
+        cfg.per_page,
+        cfg.token.clone(),
+    );
+    if query.raw.trim().is_empty() {
+        return Err(AppError::usage(
+            "No query specified. Use -q or provide --repo/--state/--labels.",
+        )
+        .into());
     }
 
-    let id_kind = if cfg.kind == "pr" {
-        ContentKind::Pr
-    } else {
-        ContentKind::Issue
-    };
-    let kind_explicit = args.kind.is_some() || cfg.kind == "pr";
-
-    let repo_for_id = if cfg.platform == "jira" {
-        repo.unwrap_or_default()
-    } else {
-        repo.ok_or_else(|| AppError::usage("--repo is required when using --id/--issue"))?
-    };
-    let req = FetchRequest {
-        target: FetchTarget::Id {
-            repo: repo_for_id,
-            id: id.to_string(),
-            kind: id_kind,
-            allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
+    Ok(FetchRequest {
+        target: FetchTarget::Search {
+            raw_query: query.raw,
         },
-        per_page: cfg.per_page,
-        token: cfg.token.clone(),
+        per_page: query.per_page,
+        token: query.token,
         jira_email: cfg.jira_email.clone(),
         include_comments: !args.no_comments,
         include_review_comments: args.include_review_comments,
-    };
-    source.fetch(&req)
+    })
 }
 
 fn ignored_flags_in_id_mode(args: &GetArgs) -> Vec<&'static str> {
@@ -303,71 +369,184 @@ fn ignored_flags_in_id_mode(args: &GetArgs) -> Vec<&'static str> {
     ignored_flags
 }
 
-fn fetch_get_by_search(
-    source: &dyn Source,
-    cfg: &Config,
-    args: &GetArgs,
-    repo: Option<String>,
-    state: Option<String>,
-) -> Result<Vec<Conversation>> {
-    let query = Query::build(
-        args.query.clone(),
-        &cfg.kind,
-        repo,
-        state,
-        args.labels.clone(),
-        args.author.clone(),
-        args.since.clone(),
-        args.milestone.clone(),
-        cfg.per_page,
-        cfg.token.clone(),
-    );
-    if query.raw.trim().is_empty() {
-        return Err(AppError::usage(
-            "No query specified. Use -q or provide --repo/--state/--labels.",
-        )
-        .into());
-    }
-    let req = FetchRequest {
-        target: FetchTarget::Search {
-            raw_query: query.raw,
-        },
-        per_page: query.per_page,
-        token: query.token,
-        jira_email: cfg.jira_email.clone(),
-        include_comments: !args.no_comments,
-        include_review_comments: args.include_review_comments,
+fn resolve_output_plan(args: &GetArgs) -> OutputPlan {
+    let stdout_is_tty = args.output.is_none() && std::io::stdout().is_terminal();
+    resolve_output_plan_with_tty(args, stdout_is_tty)
+}
+
+fn resolve_output_plan_with_tty(args: &GetArgs, stdout_is_tty: bool) -> OutputPlan {
+    let mode = if args.stream {
+        OutputMode::Stream
+    } else {
+        args.output_mode.unwrap_or(OutputMode::Auto)
     };
-    source.fetch(&req)
-}
+    let resolved_mode = match mode {
+        OutputMode::Batch => ResolvedOutputMode::Batch,
+        OutputMode::Auto | OutputMode::Stream => ResolvedOutputMode::Stream,
+    };
 
-fn build_formatter(format: OutputFormat) -> Box<dyn Formatter> {
-    match format {
-        OutputFormat::Json => Box::new(JsonFormatter),
-        OutputFormat::Yaml => Box::new(YamlFormatter),
+    let selected_format = args.format.unwrap_or({
+        if stdout_is_tty {
+            OutputFormat::Text
+        } else {
+            OutputFormat::Jsonl
+        }
+    });
+    let resolved_format = match selected_format {
+        OutputFormat::Json => ResolvedOutputFormat::Json,
+        OutputFormat::Yaml => ResolvedOutputFormat::Yaml,
+        OutputFormat::Jsonl | OutputFormat::Ndjson => ResolvedOutputFormat::Jsonl,
+        OutputFormat::Text => ResolvedOutputFormat::Text,
+    };
+
+    OutputPlan {
+        mode: resolved_mode,
+        format: resolved_format,
     }
 }
 
-fn write_formatted_output(
-    format: OutputFormat,
-    output_path: Option<&str>,
-    conversations: &[Conversation],
-) -> Result<()> {
-    let formatter = build_formatter(format);
-    let output = formatter.format(conversations)?;
+fn build_formatter(format: ResolvedOutputFormat) -> Box<dyn StreamFormatter> {
+    match format {
+        ResolvedOutputFormat::Json => Box::new(JsonStreamFormatter::new()),
+        ResolvedOutputFormat::Yaml => Box::new(YamlStreamFormatter::new()),
+        ResolvedOutputFormat::Jsonl => Box::new(JsonLinesFormatter),
+        ResolvedOutputFormat::Text => Box::new(TextFormatter::new()),
+    }
+}
 
-    match output_path {
-        Some(path) => {
-            let mut file = std::fs::File::create(path)?;
-            file.write_all(output.as_bytes())?;
-            info!(count = conversations.len(), path = %path, "wrote conversations to file");
-        }
-        None => println!("{output}"),
+fn write_batch_output(
+    source: &dyn Source,
+    req: &FetchRequest,
+    format: ResolvedOutputFormat,
+    output_path: Option<&str>,
+) -> Result<()> {
+    let conversations = source.fetch(req)?;
+    let mut formatter = build_formatter(format);
+    let mut rendered = Vec::new();
+    formatter.begin(&mut rendered)?;
+    for conversation in &conversations {
+        formatter.write_item(&mut rendered, conversation)?;
+    }
+    formatter.finish(&mut rendered)?;
+
+    if let Some(path) = output_path {
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(&rendered)?;
+        info!(count = conversations.len(), path = %path, "wrote conversations to file");
+    } else {
+        let mut out = std::io::stdout();
+        out.write_all(&rendered)?;
+        out.flush()?;
+        info!(count = conversations.len(), "wrote conversations to stdout");
     }
 
     Ok(())
 }
 
+fn write_stream_output(
+    source: &dyn Source,
+    req: &FetchRequest,
+    format: ResolvedOutputFormat,
+    output_path: Option<&str>,
+) -> Result<()> {
+    let mut formatter = build_formatter(format);
+    let mut writer: Box<dyn Write> = match output_path {
+        Some(path) => Box::new(std::fs::File::create(path)?),
+        None => Box::new(std::io::stdout()),
+    };
+    formatter.begin(&mut writer)?;
+
+    let mut emitted = 0usize;
+    let fetch_result = source.fetch_stream(req, &mut |conversation| {
+        formatter.write_item(&mut writer, &conversation)?;
+        emitted += 1;
+        Ok(())
+    });
+    if let Err(err) = fetch_result {
+        return Err(AppError::provider(format!(
+            "Fetch failed after writing {emitted} conversations: {err}"
+        ))
+        .into());
+    }
+
+    formatter.finish(&mut writer)?;
+    writer.flush()?;
+    if let Some(path) = output_path {
+        info!(count = emitted, path = %path, "stream-wrote conversations to file");
+    } else {
+        info!(count = emitted, "stream-wrote conversations to stdout");
+    }
+    Ok(())
+}
+
 fn looks_like_atlassian_api_token(token: &str) -> bool {
     token.starts_with("AT") && !token.contains(':') && !token.contains('.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args() -> GetArgs {
+        GetArgs {
+            query: None,
+            repo: Some("owner/repo".into()),
+            state: None,
+            labels: None,
+            author: None,
+            since: None,
+            milestone: None,
+            id: Some("1".into()),
+            platform: None,
+            instance: None,
+            url: None,
+            kind: None,
+            format: None,
+            output_mode: None,
+            stream: false,
+            include_review_comments: false,
+            no_comments: false,
+            output: None,
+            token: None,
+            jira_email: None,
+        }
+    }
+
+    #[test]
+    fn resolve_output_plan_defaults_to_text_for_tty() {
+        let plan = resolve_output_plan_with_tty(&args(), true);
+        assert!(matches!(plan.mode, ResolvedOutputMode::Stream));
+        assert!(matches!(plan.format, ResolvedOutputFormat::Text));
+    }
+
+    #[test]
+    fn resolve_output_plan_defaults_to_jsonl_for_non_tty() {
+        let plan = resolve_output_plan_with_tty(&args(), false);
+        assert!(matches!(plan.mode, ResolvedOutputMode::Stream));
+        assert!(matches!(plan.format, ResolvedOutputFormat::Jsonl));
+    }
+
+    #[test]
+    fn resolve_output_plan_honors_batch_mode() {
+        let mut args = args();
+        args.output_mode = Some(OutputMode::Batch);
+        let plan = resolve_output_plan_with_tty(&args, false);
+        assert!(matches!(plan.mode, ResolvedOutputMode::Batch));
+    }
+
+    #[test]
+    fn resolve_output_plan_stream_shorthand_wins() {
+        let mut args = args();
+        args.stream = true;
+        let plan = resolve_output_plan_with_tty(&args, false);
+        assert!(matches!(plan.mode, ResolvedOutputMode::Stream));
+    }
+
+    #[test]
+    fn resolve_output_plan_maps_ndjson_to_jsonl() {
+        let mut args = args();
+        args.format = Some(OutputFormat::Ndjson);
+        let plan = resolve_output_plan_with_tty(&args, false);
+        assert!(matches!(plan.format, ResolvedOutputFormat::Jsonl));
+    }
 }
