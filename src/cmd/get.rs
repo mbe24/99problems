@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Write};
 use tracing::{debug, info, warn};
 
 use crate::config::{Config, ResolveOptions, token_env_var};
-use crate::error::AppError;
+use crate::error::{AppError, classify_anyhow_error};
 use crate::format::{
     StreamFormatter, json::JsonStreamFormatter, jsonl::JsonLinesFormatter, text::TextFormatter,
     yaml::YamlStreamFormatter,
@@ -90,10 +90,11 @@ struct OutputPlan {
     after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --output-mode stream --format jsonl"
 )]
 pub(crate) struct GetArgs {
-    /// Full search query (same syntax as the platform's web UI search bar)
-    /// e.g. "state:closed Event repo:owner/repo"
-    #[arg(short = 'q', long)]
-    pub(crate) query: Option<String>,
+    /// Full search query (same syntax as the platform's web UI search bar).
+    /// Multiple space-separated tokens are accepted and joined, so quoting is optional:
+    /// e.g. -q state:closed Event repo:owner/repo
+    #[arg(short = 'q', long, num_args = 1..)]
+    pub(crate) query: Vec<String>,
 
     /// Shorthand for adding "repo:owner/repo" to the query (alias: --project)
     #[arg(short = 'r', long, visible_alias = "project")]
@@ -316,7 +317,11 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     }
 
     let query = Query::build(
-        args.query.clone(),
+        if args.query.is_empty() {
+            None
+        } else {
+            Some(args.query.join(" "))
+        },
         &cfg.kind,
         repo,
         state,
@@ -348,7 +353,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
 
 fn ignored_flags_in_id_mode(args: &GetArgs) -> Vec<&'static str> {
     let mut ignored_flags = Vec::new();
-    if args.query.is_some() {
+    if !args.query.is_empty() {
         ignored_flags.push("--query");
     }
     if args.state.is_some() {
@@ -463,10 +468,15 @@ fn write_stream_output(
         Ok(())
     });
     if let Err(err) = fetch_result {
-        return Err(AppError::provider(format!(
-            "Fetch failed after writing {emitted} conversations: {err}"
-        ))
-        .into());
+        let app_err = classify_anyhow_error(&err);
+        let app_err = if emitted > 0 {
+            app_err.with_hint(format!(
+                "{emitted} conversation(s) were written before the failure."
+            ))
+        } else {
+            app_err
+        };
+        return Err(app_err.into());
     }
 
     formatter.finish(&mut writer)?;
@@ -489,7 +499,7 @@ mod tests {
 
     fn args() -> GetArgs {
         GetArgs {
-            query: None,
+            query: vec![],
             repo: Some("owner/repo".into()),
             state: None,
             labels: None,
@@ -548,5 +558,39 @@ mod tests {
         args.format = Some(OutputFormat::Ndjson);
         let plan = resolve_output_plan_with_tty(&args, false);
         assert!(matches!(plan.format, ResolvedOutputFormat::Jsonl));
+    }
+
+    #[test]
+    fn multi_token_query_is_joined_into_single_string() {
+        use crate::source::Query;
+        let tokens: Vec<String> = ["is:issue", "state:closed", "output"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let joined = tokens.join(" ");
+        let q = Query::build(
+            Some(joined),
+            "issue",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+            None,
+        );
+        assert!(q.raw.contains("is:issue"));
+        assert!(q.raw.contains("state:closed"));
+        assert!(q.raw.contains("output"));
+    }
+
+    #[test]
+    fn empty_query_vec_produces_none_equivalent() {
+        use crate::source::Query;
+        let q = Query::build(None, "issue", None, None, None, None, None, None, 100, None);
+        assert!(q.raw.contains("is:issue"));
+        assert!(!q.raw.contains("state:"));
+        assert!(!q.raw.contains("repo:"));
     }
 }

@@ -1,7 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use crate::error::AppError;
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct InstanceConfig {
@@ -116,13 +118,14 @@ fn resolve_from_dotfiles(
     }
 
     if let Some(alias) = opts.instance {
-        return Err(anyhow!("Instance '{alias}' not found."));
+        return Err(AppError::usage(format!("Instance '{alias}' not found.")).into());
     }
 
     if let Some(default_instance) = merged.default_instance {
-        return Err(anyhow!(
+        return Err(AppError::usage(format!(
             "default_instance is set to '{default_instance}', but no instances are configured."
-        ));
+        ))
+        .into());
     }
 
     resolve_cli_only_mode(opts)
@@ -132,50 +135,56 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
     if let Some(default_instance) = merged.default_instance.as_deref()
         && !merged.instances.contains_key(default_instance)
     {
-        return Err(anyhow!(
+        return Err(AppError::usage(format!(
             "default_instance '{default_instance}' was not found in instances."
-        ));
+        ))
+        .into());
     }
 
     let selected_alias = if let Some(alias) = opts.instance {
         if merged.instances.contains_key(alias) {
             alias.to_string()
         } else {
-            return Err(anyhow!(
+            return Err(AppError::usage(format!(
                 "Instance '{alias}' not found. Available: {}",
                 available_instances(&merged.instances)
-            ));
+            ))
+            .into());
         }
     } else if merged.instances.len() == 1 {
         merged
             .instances
             .keys()
             .next()
-            .ok_or_else(|| anyhow!("No instances configured."))?
+            .ok_or_else(|| AppError::usage("No instances configured."))?
             .clone()
     } else if let Some(default_instance) = merged.default_instance.as_deref() {
         default_instance.to_string()
     } else {
-        return Err(anyhow!(
+        return Err(AppError::usage(format!(
             "Multiple instances configured. Specify --instance or set default_instance. Available: {}",
             available_instances(&merged.instances)
-        ));
+        ))
+        .into());
     };
 
     let instance = merged
         .instances
         .get(&selected_alias)
-        .ok_or_else(|| anyhow!("Instance '{selected_alias}' not found."))?;
+        .ok_or_else(|| AppError::usage(format!("Instance '{selected_alias}' not found.")))?;
     let instance_platform = instance.platform.as_deref().ok_or_else(|| {
-        anyhow!("Instance '{selected_alias}' is missing required field 'platform'.")
+        AppError::usage(format!(
+            "Instance '{selected_alias}' is missing required field 'platform'."
+        ))
     })?;
 
     if let Some(cli_platform) = opts.platform
         && cli_platform != instance_platform
     {
-        return Err(anyhow!(
+        return Err(AppError::usage(format!(
             "Platform mismatch: --instance '{selected_alias}' uses '{instance_platform}', but --platform was '{cli_platform}'."
-        ));
+        ))
+        .into());
     }
 
     let platform = instance_platform.to_string();
@@ -223,7 +232,7 @@ fn resolve_cli_only_mode(opts: ResolveOptions<'_>) -> Result<Config> {
         platform.as_str(),
         "github" | "gitlab" | "jira" | "bitbucket"
     ) {
-        return Err(anyhow!("Platform '{platform}' is not yet supported."));
+        return Err(AppError::usage(format!("Platform '{platform}' is not yet supported.")).into());
     }
 
     let token = opts
@@ -278,7 +287,7 @@ fn parse_dotfile_content(content: &str) -> Result<DotfileConfig> {
     let value: toml::Value = toml::from_str(content)?;
     let table = value
         .as_table()
-        .ok_or_else(|| anyhow!("Invalid .99problems: expected top-level TOML table."))?;
+        .ok_or_else(|| AppError::usage("Invalid .99problems: expected top-level TOML table."))?;
     validate_dotfile_keys(table)?;
     let cfg: DotfileConfig = toml::from_str(content)?;
     Ok(cfg)
@@ -287,12 +296,17 @@ fn parse_dotfile_content(content: &str) -> Result<DotfileConfig> {
 fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
     for key in ["platform", "repo", "state", "type", "per_page"] {
         if table.contains_key(key) {
-            return Err(anyhow!("Unsupported top-level key '{key}' in .99problems."));
+            return Err(AppError::usage(format!(
+                "Unsupported top-level key '{key}' in .99problems."
+            ))
+            .into());
         }
     }
     for key in ["github", "gitlab", "jira", "bitbucket"] {
         if table.contains_key(key) {
-            return Err(anyhow!("Legacy section '[{key}]' is not supported."));
+            return Err(
+                AppError::usage(format!("Legacy section '[{key}]' is not supported.")).into(),
+            );
         }
     }
     Ok(())
@@ -525,5 +539,41 @@ mod tests {
         assert_eq!(work.kind.as_deref(), Some("pr"));
         assert_eq!(work.per_page, Some(20));
         assert_eq!(merged.default_instance.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn instance_errors_are_usage_category() {
+        use crate::error::{ErrorCategory, classify_anyhow_error};
+        let err = resolve_with_opts(
+            r#"
+            [instances.work]
+            platform = "gitlab"
+            "#,
+            ResolveOptions {
+                instance: Some("missing"),
+                ..ResolveOptions::default()
+            },
+        )
+        .unwrap_err();
+        let app_err = classify_anyhow_error(&err);
+        assert_eq!(app_err.category(), ErrorCategory::Usage);
+    }
+
+    #[test]
+    fn ambiguous_instance_error_is_usage_category() {
+        use crate::error::{ErrorCategory, classify_anyhow_error};
+        let err = resolve_with_opts(
+            r#"
+            [instances.work]
+            platform = "gitlab"
+
+            [instances.public]
+            platform = "github"
+            "#,
+            ResolveOptions::default(),
+        )
+        .unwrap_err();
+        let app_err = classify_anyhow_error(&err);
+        assert_eq!(app_err.category(), ErrorCategory::Usage);
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
@@ -217,6 +218,22 @@ impl GitHubSource {
         Ok(emitted)
     }
 
+    fn diagnose_not_found(&self, repo: &str, id: u64, token: Option<&str>) -> AppError {
+        let repo_url = format!("{GITHUB_API_BASE}/repos/{repo}");
+        let req = Self::apply_auth(self.client.get(&repo_url), token);
+        match req.send() {
+            Ok(resp) if resp.status() == StatusCode::NOT_FOUND => AppError::not_found(format!(
+                "Repository '{repo}' not found or is not accessible. Check the repo identifier."
+            )),
+            Ok(_) => {
+                AppError::not_found(format!("Issue/PR #{id} not found in repository '{repo}'."))
+            }
+            Err(_) => AppError::not_found(format!(
+                "Issue/PR #{id} not found in '{repo}' (repository probe failed due to a network error; the repository may also not exist)."
+            )),
+        }
+    }
+
     fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
@@ -234,6 +251,11 @@ impl GitHubSource {
         let resp = Self::send(request, "issue fetch")?;
         if !resp.status().is_success() {
             let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                return Err(self
+                    .diagnose_not_found(repo, issue_id, req.token.as_deref())
+                    .into());
+            }
             let body = resp
                 .text()
                 .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;

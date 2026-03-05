@@ -253,6 +253,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_multi_token_query() {
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "get",
+            "-q",
+            "is:issue",
+            "state:closed",
+            "output",
+        ])
+        .expect("expected multi-token -q to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(args.query, vec!["is:issue", "state:closed", "output"]);
+            }
+            Commands::Config(_) | Commands::Completions { .. } | Commands::Man(_) => {
+                panic!("expected get command")
+            }
+        }
+    }
+
+    #[test]
     fn parses_man_subcommand() {
         let cli = Cli::try_parse_from(["99problems", "man", "--output", "docs/man"])
             .expect("expected man command to parse");
