@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a new feature or enhancement.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. Please describe the problem and the intended design clearly.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are we solving? Why now?
+      placeholder: Describe the user pain or gap this feature addresses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: High-level design and key decisions.
+      placeholder: Describe the architecture, interfaces, or behavior changes.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: In-scope implementation items.
+      placeholder: |
+        - Item 1
+        - Item 2
+        - Item 3
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Boundary
+      description: Explicitly out-of-scope items.
+      placeholder: |
+        - Not included in this task
+        - Deferred to follow-up work
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Measurable conditions that define done.
+      placeholder: |
+        - Condition 1
+        - Condition 2
+        - Condition 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant standards, docs, external constraints, or background.
+      placeholder: Provide context in prose and include useful links.
+    validations:
+      required: true

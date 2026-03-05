@@ -1,0 +1,33 @@
+name: Custom issue
+description: Open a custom issue when feature/bug templates do not fit.
+title: "[Custom] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for requests that do not fit feature or bug reporting.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the issue or request?
+      placeholder: Describe the problem clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Additional technical details, proposals, or notes.
+      placeholder: Add any implementation or background details.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant context, links, standards, or constraints.
+      placeholder: Explain context and include supporting links.
+    validations:
+      required: true
