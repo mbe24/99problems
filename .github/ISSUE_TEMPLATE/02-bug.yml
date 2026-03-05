@@ -1,0 +1,122 @@
+name: Bug report
+description: Report a bug and provide enough detail to reproduce it.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please provide a clear reproduction and exact command output to speed up triage.
+
+  - type: textarea
+    id: describe_bug
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: Explain what is broken.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run `...`
+        2. Use flags `...`
+        3. Observe error `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+      placeholder: Describe the expected result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command_output
+    attributes:
+      label: Command + output
+      description: Include the exact command, flags, and relevant stdout/stderr.
+      render: shell
+      placeholder: |
+        99problems ...
+        Error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If applicable, add terminal screenshots to help explain the problem.
+      placeholder: Paste images or links.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      description: Which operating system are you using?
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Shell
+      description: Which shell are you using?
+      options:
+        - PowerShell
+        - Git Bash
+        - WSL
+        - Bash
+        - Zsh
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      description: How was the CLI installed?
+      options:
+        - npm
+        - cargo
+        - built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: tool_version
+    attributes:
+      label: Tool version
+      description: Output of `99problems --version`.
+      placeholder: 99problems x.y.z
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration_context
+    attributes:
+      label: Configuration context
+      description: Share relevant `.99problems` instance/platform setup (remove secrets).
+      placeholder: Instance alias, platform, URL/repo/project settings, etc.
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add any other context about the problem here.
+      placeholder: Related links, logs, constraints, or history.
