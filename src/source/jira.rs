@@ -172,7 +172,12 @@ impl JiraSource {
         Ok(out)
     }
 
-    fn search(&self, req: &FetchRequest, raw_query: &str) -> Result<Vec<Conversation>> {
+    fn search_stream(
+        &self,
+        req: &FetchRequest,
+        raw_query: &str,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         let filters = parse_jira_query(raw_query);
         if matches!(filters.kind, ContentKind::Pr) {
             return Err(AppError::usage(
@@ -184,7 +189,7 @@ impl JiraSource {
         let per_page = Self::bounded_per_page(req.per_page);
         let mut start_at = 0u32;
         let mut next_page_token: Option<String> = None;
-        let mut results = vec![];
+        let mut emitted = 0usize;
 
         loop {
             let url = format!("{}/rest/api/3/search/jql", self.base_url);
@@ -225,7 +230,7 @@ impl JiraSource {
                 } else {
                     vec![]
                 };
-                results.push(Conversation {
+                emit(Conversation {
                     id: issue.key,
                     title: issue.fields.summary,
                     state: issue.fields.status.name,
@@ -236,7 +241,8 @@ impl JiraSource {
                         .map(extract_adf_text)
                         .filter(|s| !s.is_empty()),
                     comments,
-                });
+                })?;
+                emitted += 1;
             }
 
             if let Some(token) = page.next_page_token {
@@ -262,14 +268,18 @@ impl JiraSource {
             break;
         }
 
-        Ok(results)
+        Ok(emitted)
     }
 }
 
 impl Source for JiraSource {
-    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+    fn fetch_stream(
+        &self,
+        req: &FetchRequest,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search(req, raw_query),
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
             FetchTarget::Id { id, kind, .. } => {
                 if matches!(kind, ContentKind::Pr) {
                     return Err(AppError::usage(
@@ -277,7 +287,8 @@ impl Source for JiraSource {
                     )
                     .into());
                 }
-                Ok(vec![self.fetch_issue(id, req)?])
+                emit(self.fetch_issue(id, req)?)?;
+                Ok(1)
             }
         }
     }

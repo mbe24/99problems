@@ -4,7 +4,7 @@
 .SH NAME
 99problems\-get \- Fetch issue and pull request conversations
 .SH SYNOPSIS
-\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-jira\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-output\-mode\fR] [\fB\-\-stream\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-jira\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Fetch issue and pull request conversations
 .SH OPTIONS
@@ -66,12 +66,22 @@ Content type to fetch [default: issue]
 .br
 [\fIpossible values: \fRissue, pr]
 .TP
-\fB\-f\fR, \fB\-\-format\fR \fI<FORMAT>\fR [default: json]
-Output format
+\fB\-f\fR, \fB\-\-format\fR \fI<FORMAT>\fR
+Output format (default: text for TTY, jsonl for piped/file output)
 .br
 
 .br
-[\fIpossible values: \fRjson, yaml]
+[\fIpossible values: \fRjson, yaml, jsonl, ndjson, text]
+.TP
+\fB\-\-output\-mode\fR \fI<OUTPUT_MODE>\fR
+Output behavior mode
+.br
+
+.br
+[\fIpossible values: \fRauto, batch, stream]
+.TP
+\fB\-\-stream\fR
+Shorthand for \-\-output\-mode stream
 .TP
 \fB\-R\fR, \fB\-\-include\-review\-comments\fR
 Include pull request review comments (inline code comments)
@@ -94,4 +104,4 @@ Print help
 Examples:
   99problems get \-\-repo schemaorg/schemaorg \-\-id 1842
   99problems get \-\-repo github/gitignore \-\-id 2402 \-\-type pr \-\-include\-review\-comments
-  99problems get \-q "repo:owner/repo state:open label:bug" \-\-format yaml
+  99problems get \-q "repo:owner/repo state:open label:bug" \-\-output\-mode stream \-\-format jsonl

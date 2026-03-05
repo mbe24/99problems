@@ -7,7 +7,8 @@
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
 [![License Info](http://img.shields.io/badge/license-Apache%20License%20v2.0-orange.svg)](https://raw.githubusercontent.com/mbe24/99problems/main/LICENSE)
 
-`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, and Jira, and outputs JSON or YAML.
+`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, and Jira.
+It supports machine-readable output (`json`, `yaml`, `jsonl`/`ndjson`) and a human-readable `text` format.
 
 ## Installation
 
@@ -31,6 +32,9 @@ cargo install problems99
 
 # Fetch Jira issue by key
 99problems get --platform jira --id CLOUD-12817
+
+# Stream as JSON Lines for pipelines
+99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
 ```
 
 ## Commands
@@ -101,6 +105,20 @@ Generate all pages to disk:
 
 Committed man pages live in `docs/man/`.
 The `Man Drift` workflow verifies generated output stays in sync with committed files.
+
+## Output Modes
+
+`get` supports two orthogonal controls:
+
+- `--format`: `json`, `yaml`, `jsonl`, `ndjson` (alias of `jsonl`), `text`
+- `--output-mode`: `auto`, `batch`, `stream` (or `--stream`)
+
+Defaults:
+
+- TTY stdout: `--format text`, `--output-mode auto` (resolved to streaming)
+- piped stdout / file output: `--format jsonl`, `--output-mode auto` (resolved to streaming)
+
+Use `--output-mode batch` when you want all-or-nothing output at the end.
 
 ## Shell Completions
 

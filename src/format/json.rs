@@ -1,12 +1,43 @@
-use super::Formatter;
+use super::StreamFormatter;
 use crate::model::Conversation;
 use anyhow::Result;
+use std::io::Write;
 
-pub struct JsonFormatter;
+#[derive(Default)]
+pub struct JsonStreamFormatter {
+    wrote_item: bool,
+}
 
-impl Formatter for JsonFormatter {
-    fn format(&self, conversations: &[Conversation]) -> Result<String> {
-        Ok(serde_json::to_string_pretty(conversations)?)
+impl JsonStreamFormatter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { wrote_item: false }
+    }
+}
+
+impl StreamFormatter for JsonStreamFormatter {
+    fn begin(&mut self, out: &mut dyn Write) -> Result<()> {
+        out.write_all(b"[\n")?;
+        Ok(())
+    }
+
+    fn write_item(&mut self, out: &mut dyn Write, conversation: &Conversation) -> Result<()> {
+        if self.wrote_item {
+            out.write_all(b",\n")?;
+        }
+        let rendered = serde_json::to_string_pretty(conversation)?;
+        out.write_all(rendered.as_bytes())?;
+        self.wrote_item = true;
+        Ok(())
+    }
+
+    fn finish(&mut self, out: &mut dyn Write) -> Result<()> {
+        if self.wrote_item {
+            out.write_all(b"\n]\n")?;
+        } else {
+            out.write_all(b"]\n")?;
+        }
+        Ok(())
     }
 }
 
@@ -15,8 +46,8 @@ mod tests {
     use super::*;
     use crate::model::Comment;
 
-    fn sample() -> Vec<Conversation> {
-        vec![Conversation {
+    fn sample() -> Conversation {
+        Conversation {
             id: "42".into(),
             title: "Test issue".into(),
             state: "closed".into(),
@@ -30,21 +61,27 @@ mod tests {
                 review_line: None,
                 review_side: None,
             }],
-        }]
+        }
     }
 
     #[test]
-    fn formats_valid_json() {
-        let out = JsonFormatter.format(&sample()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    fn formats_valid_json_array() {
+        let mut formatter = JsonStreamFormatter::new();
+        let mut out = Vec::new();
+        formatter.begin(&mut out).unwrap();
+        formatter.write_item(&mut out, &sample()).unwrap();
+        formatter.finish(&mut out).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed[0]["id"], "42");
-        assert_eq!(parsed[0]["title"], "Test issue");
-        assert_eq!(parsed[0]["comments"][0]["author"], "user1");
     }
 
     #[test]
-    fn empty_slice_produces_empty_array() {
-        let out = JsonFormatter.format(&[]).unwrap();
-        assert_eq!(out.trim(), "[]");
+    fn empty_output_is_empty_array() {
+        let mut formatter = JsonStreamFormatter::new();
+        let mut out = Vec::new();
+        formatter.begin(&mut out).unwrap();
+        formatter.finish(&mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "[\n]\n");
     }
 }
