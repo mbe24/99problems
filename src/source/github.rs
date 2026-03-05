@@ -209,7 +209,9 @@ impl GitHubSource {
                             author: item.user.map(|u| u.login),
                             created_at: item.created_at,
                             updated_at: item.updated_at,
-                            labels: item.labels.map(|ls| ls.into_iter().map(|l| l.name).collect()),
+                            labels: item
+                                .labels
+                                .map(|ls| ls.into_iter().map(|l| l.name).collect()),
                         }),
                     },
                     req,
@@ -287,7 +289,9 @@ impl GitHubSource {
                     author: issue.user.map(|u| u.login),
                     created_at: issue.created_at,
                     updated_at: issue.updated_at,
-                    labels: issue.labels.map(|ls| ls.into_iter().map(|l| l.name).collect()),
+                    labels: issue
+                        .labels
+                        .map(|ls| ls.into_iter().map(|l| l.name).collect()),
                 }),
             },
             req,

@@ -439,7 +439,11 @@ fn write_batch_output(
     profile: OutputProfile,
     fields: &[String],
 ) -> Result<()> {
-    let fields_opt = if fields.is_empty() { None } else { Some(fields) };
+    let fields_opt = if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    };
     let conversations = source.fetch(req)?;
     let count = conversations.len();
     let mut formatter = build_formatter(format);
@@ -473,7 +477,11 @@ fn write_stream_output(
     profile: OutputProfile,
     fields: &[String],
 ) -> Result<()> {
-    let fields_opt = if fields.is_empty() { None } else { Some(fields) };
+    let fields_opt = if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    };
     let mut formatter = build_formatter(format);
     let mut writer: Box<dyn Write> = match output_path {
         Some(path) => Box::new(std::fs::File::create(path)?),

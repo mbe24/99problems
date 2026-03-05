@@ -25,6 +25,7 @@ pub enum OutputProfile {
 /// `id`, `title`, and `state` are always present; they cannot be removed.
 ///
 /// When `fields` is `Some`, it takes precedence over `profile`.
+#[must_use]
 pub fn project(
     mut conv: Conversation,
     profile: OutputProfile,

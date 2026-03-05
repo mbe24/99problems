@@ -121,10 +121,7 @@ impl JiraSource {
                 author: issue.fields.reporter.map(|r| r.display_name),
                 created_at: issue.fields.created,
                 updated_at: issue.fields.updated,
-                labels: issue
-                    .fields
-                    .labels
-                    .filter(|ls| !ls.is_empty()),
+                labels: issue.fields.labels.filter(|ls| !ls.is_empty()),
             }),
             attachments: None,
         })
