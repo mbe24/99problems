@@ -204,7 +204,10 @@ impl JiraSource {
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
                 ("maxResults".into(), per_page.to_string()),
-                ("fields".into(), "summary,description,status,issuelinks".into()),
+                (
+                    "fields".into(),
+                    "summary,description,status,issuelinks".into(),
+                ),
             ];
             if let Some(token) = &next_page_token {
                 query_params.push(("nextPageToken".into(), token.clone()));

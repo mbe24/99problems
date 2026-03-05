@@ -254,15 +254,19 @@ impl GitLabSource {
 
     fn fetch_issue_links(&self, repo: &str, iid: u64, token: Option<&str>) -> Vec<IssueLink> {
         let project = encode_project_path(repo);
-        let url = format!("{}/api/v4/projects/{project}/issues/{iid}/links", self.base_url);
+        let url = format!(
+            "{}/api/v4/projects/{project}/issues/{iid}/links",
+            self.base_url
+        );
         debug!(url = %url, "fetching GitLab issue links");
-        let items: Vec<GitLabIssueLinkItem> = match self.get_pages(&url, &[], token, PAGE_SIZE, true) {
-            Ok(v) => v,
-            Err(err) => {
-                warn!("GitLab issue link fetch failed for !{iid}: {err}");
-                return vec![];
-            }
-        };
+        let items: Vec<GitLabIssueLinkItem> =
+            match self.get_pages(&url, &[], token, PAGE_SIZE, true) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!("GitLab issue link fetch failed for !{iid}: {err}");
+                    return vec![];
+                }
+            };
         items
             .into_iter()
             .map(|i| IssueLink {
