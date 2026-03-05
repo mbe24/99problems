@@ -31,6 +31,10 @@ impl StreamFormatter for TextFormatter {
             "body: {}",
             conversation.body.as_deref().unwrap_or("(none)")
         )?;
+        writeln!(out, "links: {}", conversation.metadata.link_count)?;
+        for link in &conversation.metadata.links {
+            writeln!(out, "  {} ({})", link.id, link.relation)?;
+        }
         writeln!(out, "comments: {}", conversation.comments.len())?;
         for (idx, comment) in conversation.comments.iter().enumerate() {
             render_comment(out, idx, comment)?;

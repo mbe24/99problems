@@ -50,7 +50,7 @@ impl StreamFormatter for YamlStreamFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Comment;
+    use crate::model::{Comment, ConversationMetadata};
 
     fn sample() -> Conversation {
         Conversation {
@@ -67,6 +67,7 @@ mod tests {
                 review_line: None,
                 review_side: None,
             }],
+            metadata: ConversationMetadata::empty(),
         }
     }
 

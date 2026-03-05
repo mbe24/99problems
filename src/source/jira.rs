@@ -8,7 +8,7 @@ use tracing::{debug, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata, IssueLink};
 
 const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
 const PAGE_SIZE: u32 = 100;
@@ -64,7 +64,7 @@ impl JiraSource {
     }
 
     fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
-        let fields = "summary,description,status";
+        let fields = "summary,description,status,issuelinks";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
         let http = Self::apply_auth(
             self.client.get(&url),
@@ -105,6 +105,7 @@ impl JiraSource {
         } else {
             vec![]
         };
+        let links = extract_jira_links(issue.fields.issuelinks.as_deref().unwrap_or(&[]));
         Ok(Conversation {
             id: issue.key,
             title: issue.fields.summary,
@@ -116,6 +117,7 @@ impl JiraSource {
                 .map(extract_adf_text)
                 .filter(|s| !s.is_empty()),
             comments,
+            metadata: ConversationMetadata::from_links(links),
         })
     }
 
@@ -202,7 +204,7 @@ impl JiraSource {
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
                 ("maxResults".into(), per_page.to_string()),
-                ("fields".into(), "summary,description,status".into()),
+                ("fields".into(), "summary,description,status,issuelinks".into()),
             ];
             if let Some(token) = &next_page_token {
                 query_params.push(("nextPageToken".into(), token.clone()));
@@ -230,6 +232,7 @@ impl JiraSource {
                 } else {
                     vec![]
                 };
+                let links = extract_jira_links(issue.fields.issuelinks.as_deref().unwrap_or(&[]));
                 emit(Conversation {
                     id: issue.key,
                     title: issue.fields.summary,
@@ -241,6 +244,7 @@ impl JiraSource {
                         .map(extract_adf_text)
                         .filter(|s| !s.is_empty()),
                     comments,
+                    metadata: ConversationMetadata::from_links(links),
                 })?;
                 emitted += 1;
             }
@@ -319,6 +323,28 @@ struct JiraIssueFields {
     summary: String,
     description: Option<Value>,
     status: JiraStatus,
+    issuelinks: Option<Vec<JiraIssueLink>>,
+}
+
+#[derive(Deserialize)]
+struct JiraIssueLink {
+    #[serde(rename = "type")]
+    link_type: JiraIssueLinkType,
+    #[serde(rename = "inwardIssue")]
+    inward_issue: Option<JiraLinkedIssue>,
+    #[serde(rename = "outwardIssue")]
+    outward_issue: Option<JiraLinkedIssue>,
+}
+
+#[derive(Deserialize)]
+struct JiraIssueLinkType {
+    inward: String,
+    outward: String,
+}
+
+#[derive(Deserialize)]
+struct JiraLinkedIssue {
+    key: String,
 }
 
 #[derive(Deserialize)]
@@ -374,6 +400,25 @@ impl Default for JiraFilters {
             search_terms: vec![],
         }
     }
+}
+
+fn extract_jira_links(links: &[JiraIssueLink]) -> Vec<IssueLink> {
+    links
+        .iter()
+        .filter_map(|l| {
+            if let Some(issue) = &l.inward_issue {
+                Some(IssueLink {
+                    id: issue.key.clone(),
+                    relation: l.link_type.inward.clone(),
+                })
+            } else {
+                l.outward_issue.as_ref().map(|issue| IssueLink {
+                    id: issue.key.clone(),
+                    relation: l.link_type.outward.clone(),
+                })
+            }
+        })
+        .collect()
 }
 
 fn parse_jira_query(raw_query: &str) -> JiraFilters {
@@ -597,5 +642,55 @@ mod tests {
             ]
         });
         assert_eq!(extract_adf_text(&value), "Hello world");
+    }
+
+    #[test]
+    fn extract_jira_links_inward() {
+        let links = vec![JiraIssueLink {
+            link_type: JiraIssueLinkType {
+                inward: "is blocked by".into(),
+                outward: "blocks".into(),
+            },
+            inward_issue: Some(JiraLinkedIssue {
+                key: "PROJ-10".into(),
+            }),
+            outward_issue: None,
+        }];
+        let result = extract_jira_links(&links);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "PROJ-10");
+        assert_eq!(result[0].relation, "is blocked by");
+    }
+
+    #[test]
+    fn extract_jira_links_outward() {
+        let links = vec![JiraIssueLink {
+            link_type: JiraIssueLinkType {
+                inward: "is blocked by".into(),
+                outward: "blocks".into(),
+            },
+            inward_issue: None,
+            outward_issue: Some(JiraLinkedIssue {
+                key: "PROJ-20".into(),
+            }),
+        }];
+        let result = extract_jira_links(&links);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "PROJ-20");
+        assert_eq!(result[0].relation, "blocks");
+    }
+
+    #[test]
+    fn extract_jira_links_empty_when_no_linked_issue() {
+        let links = vec![JiraIssueLink {
+            link_type: JiraIssueLinkType {
+                inward: "is blocked by".into(),
+                outward: "blocks".into(),
+            },
+            inward_issue: None,
+            outward_issue: None,
+        }];
+        let result = extract_jira_links(&links);
+        assert!(result.is_empty());
     }
 }

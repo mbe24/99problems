@@ -24,7 +24,7 @@ impl StreamFormatter for JsonLinesFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Conversation;
+    use crate::model::{Conversation, ConversationMetadata};
 
     #[test]
     fn emits_one_json_object_per_line() {
@@ -40,6 +40,7 @@ mod tests {
                     state: "open".into(),
                     body: None,
                     comments: vec![],
+                    metadata: ConversationMetadata::empty(),
                 },
             )
             .unwrap();

@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata, IssueLink};
 
 const GITLAB_DEFAULT_BASE_URL: &str = "https://gitlab.com";
 const PAGE_SIZE: u32 = 100;
@@ -252,6 +252,26 @@ impl GitLabSource {
         Ok(comments)
     }
 
+    fn fetch_issue_links(&self, repo: &str, iid: u64, token: Option<&str>) -> Vec<IssueLink> {
+        let project = encode_project_path(repo);
+        let url = format!("{}/api/v4/projects/{project}/issues/{iid}/links", self.base_url);
+        debug!(url = %url, "fetching GitLab issue links");
+        let items: Vec<GitLabIssueLinkItem> = match self.get_pages(&url, &[], token, PAGE_SIZE, true) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("GitLab issue link fetch failed for !{iid}: {err}");
+                return vec![];
+            }
+        };
+        items
+            .into_iter()
+            .map(|i| IssueLink {
+                id: i.iid.to_string(),
+                relation: i.link_type,
+            })
+            .collect()
+    }
+
     fn fetch_conversation(
         &self,
         repo: &str,
@@ -267,12 +287,20 @@ impl GitLabSource {
             }
         }
 
+        let metadata = if seed.is_pr {
+            ConversationMetadata::empty()
+        } else {
+            let links = self.fetch_issue_links(repo, seed.id, req.token.as_deref());
+            ConversationMetadata::from_links(links)
+        };
+
         Ok(Conversation {
             id: seed.id.to_string(),
             title: seed.title,
             state: seed.state,
             body: seed.body,
             comments,
+            metadata,
         })
     }
 
@@ -535,6 +563,12 @@ struct GitLabPosition {
     old_path: Option<String>,
     new_line: Option<u64>,
     old_line: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GitLabIssueLinkItem {
+    iid: u64,
+    link_type: String,
 }
 
 struct ConversationSeed {

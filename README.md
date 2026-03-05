@@ -120,6 +120,40 @@ Defaults:
 
 Use `--output-mode batch` when you want all-or-nothing output at the end.
 
+## Output Schema
+
+Each conversation object has the following shape:
+
+```json
+{
+  "id": "1842",
+  "title": "Online-only events",
+  "state": "closed",
+  "body": "...",
+  "comments": [
+    {
+      "author": "user",
+      "created_at": "2024-01-01T00:00:00Z",
+      "body": "...",
+      "kind": "issue_comment"
+    }
+  ],
+  "metadata": {
+    "links": [
+      { "id": "1900", "relation": "blocks" }
+    ],
+    "link_count": 1
+  }
+}
+```
+
+`metadata.links` contains issue relationships sourced from the provider's structured API.
+Each entry has an `id` (the linked issue identifier) and a `relation` (the provider-supplied
+relationship text, e.g. `"blocks"`, `"is blocked by"`, `"relates to"`).
+
+PR conversations always return empty `metadata.links` in the current version.
+Link fetch failures for individual items are best-effort and do not fail the result set.
+
 ## Shell Completions
 
 ```bash

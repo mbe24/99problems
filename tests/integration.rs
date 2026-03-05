@@ -93,6 +93,7 @@ mod tests {
         assert_eq!(conv.state, "closed");
         assert!(conv.body.is_some());
         assert!(!conv.comments.is_empty());
+        assert_eq!(conv.metadata.link_count, conv.metadata.links.len());
     }
 
     #[test]
@@ -148,6 +149,9 @@ mod tests {
                 || c.review_line.is_some()
                 || c.review_side.is_some()
         }));
+        // PRs return empty link metadata in v1
+        assert!(conv.metadata.links.is_empty());
+        assert_eq!(conv.metadata.link_count, 0);
     }
 
     #[test]

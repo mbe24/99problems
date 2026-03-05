@@ -5,7 +5,7 @@ use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata, IssueLink};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -119,6 +119,40 @@ impl GitHubSource {
         Ok(raw_comments.into_iter().map(map_review_comment).collect())
     }
 
+    fn fetch_issue_links(&self, repo: &str, id: u64, token: Option<&str>) -> Vec<IssueLink> {
+        let url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/sub_issues");
+        debug!(url = %url, "fetching GitHub issue links");
+        let req = Self::apply_auth(self.client.get(&url), token);
+        let resp = match req.send() {
+            Ok(r) => r,
+            Err(err) => {
+                warn!("GitHub issue link fetch failed for #{id}: {err}");
+                return vec![];
+            }
+        };
+        if !resp.status().is_success() {
+            warn!(
+                "GitHub issue link fetch returned {} for #{id}; returning empty links",
+                resp.status()
+            );
+            return vec![];
+        }
+        let items: Vec<SubIssueItem> = match resp.json() {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("GitHub issue link decode failed for #{id}: {err}");
+                return vec![];
+            }
+        };
+        items
+            .into_iter()
+            .map(|i| IssueLink {
+                id: i.number.to_string(),
+                relation: "sub_issue".into(),
+            })
+            .collect()
+    }
+
     fn fetch_conversation(
         &self,
         repo: &str,
@@ -134,12 +168,20 @@ impl GitHubSource {
             }
         }
 
+        let metadata = if item.is_pr {
+            ConversationMetadata::empty()
+        } else {
+            let links = self.fetch_issue_links(repo, item.id, req.token.as_deref());
+            ConversationMetadata::from_links(links)
+        };
+
         Ok(Conversation {
             id: item.id.to_string(),
             title: item.title,
             state: item.state,
             body: item.body,
             comments,
+            metadata,
         })
     }
 
@@ -300,6 +342,11 @@ impl Source for GitHubSource {
 }
 
 // --- GitHub API response shapes ---
+
+#[derive(Deserialize)]
+struct SubIssueItem {
+    number: u64,
+}
 
 #[derive(Deserialize)]
 struct SearchResponse {
