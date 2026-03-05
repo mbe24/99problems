@@ -4,6 +4,7 @@ mod error;
 mod format;
 mod logging;
 mod model;
+mod output;
 mod source;
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -261,6 +262,78 @@ mod tests {
             Commands::Get(_) | Commands::Config(_) | Commands::Completions { .. } => {
                 panic!("expected man command")
             }
+        }
+    }
+
+    #[test]
+    fn parses_profile_slim() {
+        use crate::output::OutputProfile;
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+            "--profile",
+            "slim",
+        ])
+        .expect("expected --profile slim to parse");
+        match cli.command {
+            Commands::Get(args) => assert_eq!(args.profile, OutputProfile::Slim),
+            _ => panic!("expected get command"),
+        }
+    }
+
+    #[test]
+    fn parses_profile_rich() {
+        use crate::output::OutputProfile;
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+            "--profile",
+            "rich",
+        ])
+        .expect("expected --profile rich to parse");
+        match cli.command {
+            Commands::Get(args) => assert_eq!(args.profile, OutputProfile::Rich),
+            _ => panic!("expected get command"),
+        }
+    }
+
+    #[test]
+    fn parses_fields_flag() {
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "get",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "1",
+            "--fields",
+            "body,comments,meta",
+        ])
+        .expect("expected --fields to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(args.fields, vec!["body", "comments", "meta"]);
+            }
+            _ => panic!("expected get command"),
+        }
+    }
+
+    #[test]
+    fn default_profile_is_standard() {
+        use crate::output::OutputProfile;
+        let cli = Cli::try_parse_from(["99problems", "get", "--repo", "owner/repo", "--id", "1"])
+            .expect("expected default get to parse");
+        match cli.command {
+            Commands::Get(args) => assert_eq!(args.profile, OutputProfile::Standard),
+            _ => panic!("expected get command"),
         }
     }
 }

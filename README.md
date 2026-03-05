@@ -120,6 +120,83 @@ Defaults:
 
 Use `--output-mode batch` when you want all-or-nothing output at the end.
 
+## Output Profiles and Field Control
+
+`get` supports profile-based and field-based output shaping via `--profile` and `--fields`.
+
+### Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `standard` | **(default)** Core fields: `id`, `title`, `state`, `body`, `comments`. Same as pre-profile behavior. |
+| `slim` | Minimal payload: `id`, `title`, `state` only. Fastest and smallest output. |
+| `rich` | Full output: all standard fields plus optional `meta` and `attachments` groups. |
+
+```bash
+# Minimal output (id, title, state only)
+99problems get --repo owner/repo --id 42 --profile slim
+
+# Rich output with metadata (url, author, timestamps, labels)
+99problems get --repo owner/repo --id 42 --profile rich --format json
+
+# Rich output streamed as JSON Lines
+99problems get -q "repo:owner/repo state:open" --profile rich --format jsonl
+```
+
+### Field Whitelisting
+
+Use `--fields` to precisely control which field groups appear. This overrides `--profile`.
+Core fields (`id`, `title`, `state`) are always included.
+
+Available groups: `body`, `comments`, `meta`, `attachments`.
+
+```bash
+# Only id, title, state, and metadata
+99problems get --repo owner/repo --id 42 --fields meta
+
+# Only id, title, state, and body (no comments)
+99problems get --repo owner/repo --id 42 --fields body
+
+# Body, comments, and metadata
+99problems get --repo owner/repo --id 42 --fields body,comments,meta
+```
+
+### `meta` Group
+
+When included (via `--profile rich` or `--fields meta`), the `meta` object contains:
+
+```json
+{
+  "meta": {
+    "url": "https://github.com/owner/repo/issues/42",
+    "author": "octocat",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-06-01T12:00:00Z",
+    "labels": ["bug", "enhancement"]
+  }
+}
+```
+
+Fields are populated where the platform API provides them (GitHub, GitLab, Jira).
+Fields absent from the platform response are omitted.
+
+### `attachments` Group
+
+When included (via `--profile rich` or `--fields attachments`), the `attachments` array
+contains metadata/URL references only. No file content is downloaded (v1).
+
+```json
+{
+  "attachments": [
+    {
+      "url": "https://example.com/screenshot.png",
+      "filename": "screenshot.png",
+      "content_type": "image/png"
+    }
+  ]
+}
+```
+
 ## Shell Completions
 
 ```bash

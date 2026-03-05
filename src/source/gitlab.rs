@@ -1,15 +1,14 @@
-use std::collections::HashSet;
-use std::fmt::Write as _;
-
 use anyhow::Result;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::fmt::Write as _;
 use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMeta};
 
 const GITLAB_DEFAULT_BASE_URL: &str = "https://gitlab.com";
 const PAGE_SIZE: u32 = 100;
@@ -273,6 +272,8 @@ impl GitLabSource {
             state: seed.state,
             body: seed.body,
             comments,
+            meta: seed.meta,
+            attachments: None,
         })
     }
 
@@ -314,6 +315,13 @@ impl GitLabSource {
                                 state: i.state,
                                 body: i.description,
                                 is_pr: false,
+                                meta: Some(ConversationMeta {
+                                    url: i.web_url,
+                                    author: i.author.map(|a| a.username),
+                                    created_at: i.created_at,
+                                    updated_at: i.updated_at,
+                                    labels: i.labels,
+                                }),
                             },
                             req,
                         )?;
@@ -340,6 +348,13 @@ impl GitLabSource {
                                 state: mr.state,
                                 body: mr.description,
                                 is_pr: true,
+                                meta: Some(ConversationMeta {
+                                    url: mr.web_url,
+                                    author: mr.author.map(|a| a.username),
+                                    created_at: mr.created_at,
+                                    updated_at: mr.updated_at,
+                                    labels: mr.labels,
+                                }),
                             },
                             req,
                         )?;
@@ -401,6 +416,13 @@ impl GitLabSource {
                             state: issue.state,
                             body: issue.description,
                             is_pr: false,
+                            meta: Some(ConversationMeta {
+                                url: issue.web_url,
+                                author: issue.author.map(|a| a.username),
+                                created_at: issue.created_at,
+                                updated_at: issue.updated_at,
+                                labels: issue.labels,
+                            }),
                         },
                         req,
                     )?;
@@ -422,6 +444,13 @@ impl GitLabSource {
                             state: mr.state,
                             body: mr.description,
                             is_pr: true,
+                            meta: Some(ConversationMeta {
+                                url: mr.web_url,
+                                author: mr.author.map(|a| a.username),
+                                created_at: mr.created_at,
+                                updated_at: mr.updated_at,
+                                labels: mr.labels,
+                            }),
                         },
                         req,
                     )?;
@@ -441,6 +470,13 @@ impl GitLabSource {
                             state: mr.state,
                             body: mr.description,
                             is_pr: true,
+                            meta: Some(ConversationMeta {
+                                url: mr.web_url,
+                                author: mr.author.map(|a| a.username),
+                                created_at: mr.created_at,
+                                updated_at: mr.updated_at,
+                                labels: mr.labels,
+                            }),
                         },
                         req,
                     )?;
@@ -491,6 +527,11 @@ struct GitLabIssueItem {
     title: String,
     state: String,
     description: Option<String>,
+    web_url: Option<String>,
+    author: Option<GitLabAuthor>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -499,6 +540,11 @@ struct GitLabMergeRequestItem {
     title: String,
     state: String,
     description: Option<String>,
+    web_url: Option<String>,
+    author: Option<GitLabAuthor>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -543,6 +589,7 @@ struct ConversationSeed {
     state: String,
     body: Option<String>,
     is_pr: bool,
+    meta: Option<ConversationMeta>,
 }
 
 fn map_note_comment(note: GitLabNote) -> Comment {

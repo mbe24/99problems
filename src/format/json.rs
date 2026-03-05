@@ -61,6 +61,8 @@ mod tests {
                 review_line: None,
                 review_side: None,
             }],
+            meta: None,
+            attachments: None,
         }
     }
 

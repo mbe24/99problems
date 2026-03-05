@@ -9,6 +9,7 @@ use crate::format::{
     StreamFormatter, json::JsonStreamFormatter, jsonl::JsonLinesFormatter, text::TextFormatter,
     yaml::YamlStreamFormatter,
 };
+use crate::output::{OutputProfile, project};
 use crate::source::{
     ContentKind, FetchRequest, FetchTarget, Query, Source, github::GitHubSource,
     gitlab::GitLabSource, jira::JiraSource,
@@ -170,6 +171,18 @@ pub(crate) struct GetArgs {
     /// Jira account email used with API tokens (for Atlassian Cloud basic auth)
     #[arg(long)]
     pub(crate) jira_email: Option<String>,
+
+    /// Output profile controlling which field groups are included.
+    /// `slim` keeps only id/title/state; `standard` is the default (current behaviour);
+    /// `rich` adds metadata and attachment references.
+    #[arg(long, value_enum, default_value = "standard")]
+    pub(crate) profile: OutputProfile,
+
+    /// Comma-separated list of field groups to include, overriding --profile.
+    /// Available groups: body, comments, meta, attachments.
+    /// Core fields (id, title, state) are always present.
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) fields: Vec<String>,
 }
 
 /// Run the `get` command.
@@ -201,12 +214,16 @@ pub(crate) fn run(args: &GetArgs) -> Result<()> {
             &req,
             output_plan.format,
             args.output.as_deref(),
+            args.profile,
+            &args.fields,
         ),
         ResolvedOutputMode::Stream => write_stream_output(
             source.as_ref(),
             &req,
             output_plan.format,
             args.output.as_deref(),
+            args.profile,
+            &args.fields,
         ),
     }
 }
@@ -419,25 +436,30 @@ fn write_batch_output(
     req: &FetchRequest,
     format: ResolvedOutputFormat,
     output_path: Option<&str>,
+    profile: OutputProfile,
+    fields: &[String],
 ) -> Result<()> {
+    let fields_opt = if fields.is_empty() { None } else { Some(fields) };
     let conversations = source.fetch(req)?;
+    let count = conversations.len();
     let mut formatter = build_formatter(format);
     let mut rendered = Vec::new();
     formatter.begin(&mut rendered)?;
-    for conversation in &conversations {
-        formatter.write_item(&mut rendered, conversation)?;
+    for conversation in conversations {
+        let projected = project(conversation, profile, fields_opt);
+        formatter.write_item(&mut rendered, &projected)?;
     }
     formatter.finish(&mut rendered)?;
 
     if let Some(path) = output_path {
         let mut file = std::fs::File::create(path)?;
         file.write_all(&rendered)?;
-        info!(count = conversations.len(), path = %path, "wrote conversations to file");
+        info!(count, path = %path, "wrote conversations to file");
     } else {
         let mut out = std::io::stdout();
         out.write_all(&rendered)?;
         out.flush()?;
-        info!(count = conversations.len(), "wrote conversations to stdout");
+        info!(count, "wrote conversations to stdout");
     }
 
     Ok(())
@@ -448,7 +470,10 @@ fn write_stream_output(
     req: &FetchRequest,
     format: ResolvedOutputFormat,
     output_path: Option<&str>,
+    profile: OutputProfile,
+    fields: &[String],
 ) -> Result<()> {
+    let fields_opt = if fields.is_empty() { None } else { Some(fields) };
     let mut formatter = build_formatter(format);
     let mut writer: Box<dyn Write> = match output_path {
         Some(path) => Box::new(std::fs::File::create(path)?),
@@ -458,7 +483,8 @@ fn write_stream_output(
 
     let mut emitted = 0usize;
     let fetch_result = source.fetch_stream(req, &mut |conversation| {
-        formatter.write_item(&mut writer, &conversation)?;
+        let projected = project(conversation, profile, fields_opt);
+        formatter.write_item(&mut writer, &projected)?;
         emitted += 1;
         Ok(())
     });
@@ -509,6 +535,8 @@ mod tests {
             output: None,
             token: None,
             jira_email: None,
+            profile: OutputProfile::Standard,
+            fields: vec![],
         }
     }
 

@@ -8,7 +8,7 @@ use tracing::{debug, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMeta};
 
 const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
 const PAGE_SIZE: u32 = 100;
@@ -64,7 +64,7 @@ impl JiraSource {
     }
 
     fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
-        let fields = "summary,description,status";
+        let fields = "summary,description,status,reporter,created,updated,labels";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
         let http = Self::apply_auth(
             self.client.get(&url),
@@ -116,6 +116,17 @@ impl JiraSource {
                 .map(extract_adf_text)
                 .filter(|s| !s.is_empty()),
             comments,
+            meta: Some(ConversationMeta {
+                url: issue.self_url,
+                author: issue.fields.reporter.map(|r| r.display_name),
+                created_at: issue.fields.created,
+                updated_at: issue.fields.updated,
+                labels: issue
+                    .fields
+                    .labels
+                    .filter(|ls| !ls.is_empty()),
+            }),
+            attachments: None,
         })
     }
 
@@ -202,7 +213,10 @@ impl JiraSource {
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
                 ("maxResults".into(), per_page.to_string()),
-                ("fields".into(), "summary,description,status".into()),
+                (
+                    "fields".into(),
+                    "summary,description,status,reporter,created,updated,labels".into(),
+                ),
             ];
             if let Some(token) = &next_page_token {
                 query_params.push(("nextPageToken".into(), token.clone()));
@@ -241,6 +255,14 @@ impl JiraSource {
                         .map(extract_adf_text)
                         .filter(|s| !s.is_empty()),
                     comments,
+                    meta: Some(ConversationMeta {
+                        url: issue.self_url,
+                        author: issue.fields.reporter.map(|r| r.display_name),
+                        created_at: issue.fields.created,
+                        updated_at: issue.fields.updated,
+                        labels: issue.fields.labels.filter(|ls| !ls.is_empty()),
+                    }),
+                    attachments: None,
                 })?;
                 emitted += 1;
             }
@@ -311,6 +333,8 @@ struct JiraSearchResponse {
 #[derive(Deserialize)]
 struct JiraIssueItem {
     key: String,
+    #[serde(rename = "self")]
+    self_url: Option<String>,
     fields: JiraIssueFields,
 }
 
@@ -319,6 +343,10 @@ struct JiraIssueFields {
     summary: String,
     description: Option<Value>,
     status: JiraStatus,
+    reporter: Option<JiraAuthor>,
+    created: Option<String>,
+    updated: Option<String>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]

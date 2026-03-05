@@ -40,6 +40,8 @@ mod tests {
                     state: "open".into(),
                     body: None,
                     comments: vec![],
+                    meta: None,
+                    attachments: None,
                 },
             )
             .unwrap();

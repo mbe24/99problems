@@ -5,7 +5,7 @@ use tracing::{debug, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMeta};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -140,6 +140,8 @@ impl GitHubSource {
             state: item.state,
             body: item.body,
             comments,
+            meta: item.meta,
+            attachments: None,
         })
     }
 
@@ -202,6 +204,13 @@ impl GitHubSource {
                         state: item.state,
                         body: item.body,
                         is_pr: item.pull_request.is_some(),
+                        meta: Some(ConversationMeta {
+                            url: item.html_url,
+                            author: item.user.map(|u| u.login),
+                            created_at: item.created_at,
+                            updated_at: item.updated_at,
+                            labels: item.labels.map(|ls| ls.into_iter().map(|l| l.name).collect()),
+                        }),
                     },
                     req,
                 )?;
@@ -273,6 +282,13 @@ impl GitHubSource {
                 state: issue.state,
                 body: issue.body,
                 is_pr,
+                meta: Some(ConversationMeta {
+                    url: issue.html_url,
+                    author: issue.user.map(|u| u.login),
+                    created_at: issue.created_at,
+                    updated_at: issue.updated_at,
+                    labels: issue.labels.map(|ls| ls.into_iter().map(|l| l.name).collect()),
+                }),
             },
             req,
         )?;
@@ -312,8 +328,13 @@ struct SearchItem {
     title: String,
     state: String,
     body: Option<String>,
+    html_url: Option<String>,
     repository_url: Option<String>,
     pull_request: Option<PullRequestMarker>,
+    user: Option<UserItem>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    labels: Option<Vec<LabelItem>>,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +343,17 @@ struct IssueItem {
     title: String,
     state: String,
     body: Option<String>,
+    html_url: Option<String>,
     pull_request: Option<PullRequestMarker>,
+    user: Option<UserItem>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    labels: Option<Vec<LabelItem>>,
+}
+
+#[derive(Deserialize)]
+struct LabelItem {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -356,6 +387,7 @@ struct ConversationSeed {
     state: String,
     body: Option<String>,
     is_pr: bool,
+    meta: Option<ConversationMeta>,
 }
 
 fn map_issue_comment(c: IssueCommentItem) -> Comment {
