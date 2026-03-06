@@ -15,7 +15,7 @@
     "@mbe24/99problems-darwin-arm64": "0.2.0",
     "@mbe24/99problems-linux-arm64": "0.2.0"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/mbe24/99problems"
