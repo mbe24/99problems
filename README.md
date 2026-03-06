@@ -7,7 +7,7 @@
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
 [![License Info](http://img.shields.io/badge/license-Apache%20License%20v2.0-orange.svg)](https://raw.githubusercontent.com/mbe24/99problems/main/LICENSE)
 
-`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, Jira, and Bitbucket Cloud.
+`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, Jira, and Bitbucket.
 It supports machine-readable output (`json`, `yaml`, `jsonl`/`ndjson`) and a human-readable `text` format.
 
 ## Installation
@@ -35,6 +35,9 @@ cargo install problems99
 
 # Fetch Bitbucket Cloud PR by ID
 99problems get --platform bitbucket --deployment cloud --repo workspace/repo_slug --id 1 --type pr
+
+# Fetch Bitbucket Data Center PR by ID
+99problems get --platform bitbucket --deployment selfhosted --url https://bitbucket.mycompany.com --repo PROJECT/repo_slug --id 1
 
 # Stream as JSON Lines for pipelines
 99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
@@ -94,10 +97,17 @@ platform = "bitbucket"
 deployment = "cloud"
 repo = "workspace/repo_slug"
 token = "username:app_password"
-account_email = "user@example.com"
+
+[instances.bitbucket-dc]
+platform = "bitbucket"
+deployment = "selfhosted"
+url = "https://bitbucket.mycompany.com"
+repo = "PROJECT/repo_slug"
+token = "pat_or_bearer_token"
 ```
 
-For Bitbucket Cloud, prefer `username:app_password` in `token`.
+Bitbucket support is pull-request only; when `--type` is omitted, `99problems` defaults to PRs.
+For Bitbucket Cloud, use an app-password, repository access token, or workspace-level access token (premium feature) in `token`.
 
 Selection order: `--instance` -> single configured instance -> `default_instance`.
 

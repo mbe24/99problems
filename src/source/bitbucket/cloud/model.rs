@@ -1,22 +1,12 @@
 use serde::Deserialize;
 
-use super::query::BitbucketFilters;
+use super::super::query::BitbucketFilters;
 use crate::model::Comment;
 
 #[derive(Deserialize)]
 pub(super) struct BitbucketPage<T> {
     pub(super) values: Vec<T>,
     pub(super) next: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct BitbucketIssueItem {
-    pub(super) id: u64,
-    pub(super) title: String,
-    pub(super) state: String,
-    pub(super) content: Option<BitbucketRichText>,
-    pub(super) reporter: Option<BitbucketUser>,
-    pub(super) created_on: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -56,33 +46,6 @@ pub(super) struct BitbucketUser {
     pub(super) display_name: Option<String>,
     pub(super) nickname: Option<String>,
     pub(super) username: Option<String>,
-}
-
-pub(super) fn matches_issue_filters(item: &BitbucketIssueItem, filters: &BitbucketFilters) -> bool {
-    if !matches_issue_state(item.state.as_str(), filters.state.as_deref()) {
-        return false;
-    }
-    if let Some(author) = filters.author.as_deref()
-        && !user_matches(item.reporter.as_ref(), author)
-    {
-        return false;
-    }
-    if let Some(since) = filters.since.as_deref()
-        && let Some(created) = item.created_on.as_deref()
-        && created < since
-    {
-        return false;
-    }
-    matches_terms(
-        &[
-            item.title.as_str(),
-            item.content
-                .as_ref()
-                .and_then(|c| c.raw.as_deref())
-                .unwrap_or(""),
-        ],
-        filters,
-    )
 }
 
 pub(super) fn matches_pr_filters(
@@ -131,19 +94,6 @@ fn matches_terms(haystack_parts: &[&str], filters: &BitbucketFilters) -> bool {
         .all(|term| haystack.contains(&term.to_ascii_lowercase()))
 }
 
-fn matches_issue_state(state: &str, filter_state: Option<&str>) -> bool {
-    let state = state.to_ascii_lowercase();
-    let Some(filter) = filter_state.map(str::to_ascii_lowercase) else {
-        return true;
-    };
-    match filter.as_str() {
-        "open" | "opened" => !matches!(state.as_str(), "resolved" | "closed"),
-        "closed" => matches!(state.as_str(), "resolved" | "closed"),
-        "all" => true,
-        other => state == other,
-    }
-}
-
 fn matches_pr_state(state: &str, filter_state: Option<&str>) -> bool {
     let state = state.to_ascii_lowercase();
     let Some(filter) = filter_state.map(str::to_ascii_lowercase) else {
@@ -178,18 +128,6 @@ fn user_matches(user: Option<&BitbucketUser>, needle: &str) -> bool {
             .as_deref()
             .map(str::to_ascii_lowercase)
             .is_some_and(|v| v == needle)
-}
-
-pub(super) fn map_issue_comment(item: BitbucketCommentItem) -> Comment {
-    Comment {
-        author: item.user.and_then(select_author_name),
-        created_at: item.created_on.unwrap_or_default(),
-        body: item.content.and_then(|c| c.raw),
-        kind: Some("issue_comment".to_string()),
-        review_path: None,
-        review_line: None,
-        review_side: None,
-    }
 }
 
 pub(super) fn map_pr_comment(
@@ -236,13 +174,6 @@ fn select_author_name(user: BitbucketUser) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn issue_state_filter_maps_open_and_closed() {
-        assert!(matches_issue_state("new", Some("open")));
-        assert!(!matches_issue_state("closed", Some("open")));
-        assert!(matches_issue_state("resolved", Some("closed")));
-    }
 
     #[test]
     fn pr_state_filter_maps_open_closed_and_merged() {

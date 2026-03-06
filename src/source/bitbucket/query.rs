@@ -7,6 +7,7 @@ use crate::source::ContentKind;
 pub(super) struct BitbucketFilters {
     pub(super) repo: Option<String>,
     pub(super) kind: ContentKind,
+    pub(super) kind_explicit: bool,
     pub(super) state: Option<String>,
     pub(super) labels: Vec<String>,
     pub(super) author: Option<String>,
@@ -19,7 +20,8 @@ impl Default for BitbucketFilters {
     fn default() -> Self {
         Self {
             repo: None,
-            kind: ContentKind::Issue,
+            kind: ContentKind::Pr,
+            kind_explicit: false,
             state: None,
             labels: vec![],
             author: None,
@@ -36,19 +38,23 @@ pub(super) fn parse_bitbucket_query(raw_query: &str) -> BitbucketFilters {
     for token in raw_query.split_whitespace() {
         if token == "is:issue" {
             filters.kind = ContentKind::Issue;
+            filters.kind_explicit = true;
             continue;
         }
         if token == "is:pr" {
             filters.kind = ContentKind::Pr;
+            filters.kind_explicit = true;
             continue;
         }
         if let Some(kind) = token.strip_prefix("type:") {
             if kind == "issue" {
                 filters.kind = ContentKind::Issue;
+                filters.kind_explicit = true;
                 continue;
             }
             if kind == "pr" {
                 filters.kind = ContentKind::Pr;
+                filters.kind_explicit = true;
                 continue;
             }
         }
@@ -88,23 +94,36 @@ pub(super) fn parse_bitbucket_query(raw_query: &str) -> BitbucketFilters {
 /// # Errors
 ///
 /// Returns an error when the repository path is missing or malformed.
-pub(super) fn parse_repo(raw_repo: Option<&str>) -> Result<(String, String)> {
+pub(super) fn parse_workspace_repo(raw_repo: Option<&str>) -> Result<(String, String)> {
+    parse_repo_pair(raw_repo, "workspace/repo_slug")
+}
+
+/// Parse `project/repo_slug` from `repo:` input.
+///
+/// # Errors
+///
+/// Returns an error when the repository path is missing or malformed.
+pub(super) fn parse_project_repo(raw_repo: Option<&str>) -> Result<(String, String)> {
+    parse_repo_pair(raw_repo, "project/repo_slug")
+}
+
+fn parse_repo_pair(raw_repo: Option<&str>, expected_format: &str) -> Result<(String, String)> {
     let repo = raw_repo.ok_or_else(|| {
-        AppError::usage(
-            "No repo: found in query. Use --repo or include 'repo:workspace/repo_slug' in -q",
-        )
+        AppError::usage(format!(
+            "No repo: found in query. Use --repo or include 'repo:{expected_format}' in -q"
+        ))
     })?;
     let mut parts = repo.split('/');
-    let workspace = parts.next().unwrap_or_default().trim();
-    let repo_slug = parts.next().unwrap_or_default().trim();
+    let first = parts.next().unwrap_or_default().trim();
+    let second = parts.next().unwrap_or_default().trim();
     let tail = parts.next();
-    if workspace.is_empty() || repo_slug.is_empty() || tail.is_some() {
+    if first.is_empty() || second.is_empty() || tail.is_some() {
         return Err(AppError::usage(format!(
-            "Bitbucket repo must be 'workspace/repo_slug', got '{repo}'."
+            "Bitbucket repo must be '{expected_format}', got '{repo}'."
         ))
         .into());
     }
-    Ok((workspace.to_string(), repo_slug.to_string()))
+    Ok((first.to_string(), second.to_string()))
 }
 
 #[cfg(test)]
@@ -117,6 +136,7 @@ mod tests {
             "is:pr repo:workspace/repo state:closed label:bug author:alice created:>=2025-01-01 milestone:v1 text",
         );
         assert!(matches!(q.kind, ContentKind::Pr));
+        assert!(q.kind_explicit);
         assert_eq!(q.repo.as_deref(), Some("workspace/repo"));
         assert_eq!(q.state.as_deref(), Some("closed"));
         assert_eq!(q.labels, vec!["bug"]);
@@ -127,8 +147,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_repo_requires_workspace_and_repo_slug() {
-        let err = parse_repo(Some("workspace")).unwrap_err().to_string();
+    fn parse_query_defaults_to_pr_without_explicit_kind() {
+        let q = parse_bitbucket_query("repo:workspace/repo state:open");
+        assert!(matches!(q.kind, ContentKind::Pr));
+        assert!(!q.kind_explicit);
+    }
+
+    #[test]
+    fn parse_workspace_repo_requires_workspace_and_repo_slug() {
+        let err = parse_workspace_repo(Some("workspace"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("workspace/repo_slug"));
+    }
+
+    #[test]
+    fn parse_project_repo_requires_project_and_repo_slug() {
+        let err = parse_project_repo(Some("PROJECT")).unwrap_err().to_string();
+        assert!(err.contains("project/repo_slug"));
     }
 }

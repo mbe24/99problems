@@ -5,7 +5,6 @@
 /// - `GITLAB_TOKEN`=...
 /// - `JIRA_TOKEN`=...
 /// - `BITBUCKET_TOKEN`=...
-/// - `BITBUCKET_ACCOUNT_EMAIL`=... (optional unless token requires basic auth)
 /// - `BITBUCKET_REPO`=`workspace/repo_slug`
 /// - `BITBUCKET_PR_ID`=numeric pull request id
 #[cfg(test)]
@@ -36,10 +35,6 @@ mod tests {
 
     fn bitbucket_token() -> Option<String> {
         std::env::var("BITBUCKET_TOKEN").ok()
-    }
-
-    fn bitbucket_account_email() -> Option<String> {
-        std::env::var("BITBUCKET_ACCOUNT_EMAIL").ok()
     }
 
     fn required_env(var: &str) -> String {
@@ -380,7 +375,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires live network and BITBUCKET_REPO/BITBUCKET_PR_ID env vars"]
-    fn bitbucket_fetch_pr_with_issue_fallback() {
+    fn bitbucket_cloud_fetch_pr_by_id() {
         let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
         let repo = required_env("BITBUCKET_REPO");
         let pr_id = required_env("BITBUCKET_PR_ID");
@@ -388,12 +383,12 @@ mod tests {
             target: FetchTarget::Id {
                 repo,
                 id: pr_id.clone(),
-                kind: ContentKind::Issue,
-                allow_fallback_to_pr: true,
+                kind: ContentKind::Pr,
+                allow_fallback_to_pr: false,
             },
             per_page: 50,
             token: bitbucket_token(),
-            account_email: bitbucket_account_email(),
+            account_email: None,
             include_comments: true,
             include_review_comments: true,
         };
@@ -404,7 +399,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires live network and BITBUCKET_REPO env var"]
-    fn bitbucket_search_pr_results() {
+    fn bitbucket_cloud_search_pr_results() {
         let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
         let repo = required_env("BITBUCKET_REPO");
         let req = FetchRequest {
@@ -413,11 +408,31 @@ mod tests {
             },
             per_page: 10,
             token: bitbucket_token(),
-            account_email: bitbucket_account_email(),
+            account_email: None,
             include_comments: false,
             include_review_comments: false,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn bitbucket_cloud_rejects_issue_kind() {
+        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo: "workspace/repo".into(),
+                id: "1".into(),
+                kind: ContentKind::Issue,
+                allow_fallback_to_pr: false,
+            },
+            per_page: 10,
+            token: None,
+            account_email: None,
+            include_comments: false,
+            include_review_comments: false,
+        };
+        let err = source.fetch(&req).unwrap_err().to_string();
+        assert!(err.contains("supports pull requests only"));
     }
 }
