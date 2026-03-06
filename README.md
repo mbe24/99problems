@@ -157,3 +157,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 See [LICENSE](LICENSE).
+
+Copyright (c) 2026 Mikael Beyene

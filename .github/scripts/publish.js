@@ -69,7 +69,7 @@ for (const p of platforms) {
     os: [p.os],
     cpu: [p.cpu],
     main: `bin/${p.binary}`,
-    license: "MIT",
+    license: "Apache-2.0",
     repository: { type: "git", url: "https://github.com/mbe24/99problems" },
   };
   fs.writeFileSync(
