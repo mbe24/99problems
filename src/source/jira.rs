@@ -38,7 +38,7 @@ impl JiraSource {
     fn apply_auth(
         req: RequestBuilder,
         token: Option<&str>,
-        jira_email: Option<&str>,
+        account_email: Option<&str>,
     ) -> RequestBuilder {
         let req = req.header("Accept", "application/json");
         match token {
@@ -46,7 +46,7 @@ impl JiraSource {
                 let (user, api_token) = t.split_once(':').unwrap_or_default();
                 req.basic_auth(user, Some(api_token))
             }
-            Some(t) => match jira_email {
+            Some(t) => match account_email {
                 Some(email) => req.basic_auth(email, Some(t)),
                 None => req.bearer_auth(t),
             },
@@ -69,20 +69,20 @@ impl JiraSource {
         let http = Self::apply_auth(
             self.client.get(&url),
             req.token.as_deref(),
-            req.jira_email.as_deref(),
+            req.account_email.as_deref(),
         )
         .query(&[("fields", fields)]);
         let resp = Self::send(http, "issue fetch")?;
         if resp.status() == StatusCode::NOT_FOUND {
             let body = resp.text().unwrap_or_default();
             let auth_hint = if req.token.is_some() {
-                if req.jira_email.is_none() {
-                    " Check Jira permissions or configure Jira email for API-token auth."
+                if req.account_email.is_none() {
+                    " Check Jira permissions or configure account_email for API-token auth."
                 } else {
                     " Check Jira permissions for this issue."
                 }
             } else {
-                " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [jira].token."
+                " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
             };
             return Err(AppError::not_found(format!(
                 "Jira issue '{}' was not found or is not accessible.{} Response: {}",
@@ -97,7 +97,7 @@ impl JiraSource {
         let issue: JiraIssueItem = parse_jira_json(
             resp,
             req.token.as_deref(),
-            req.jira_email.as_deref(),
+            req.account_email.as_deref(),
             "issue fetch",
         )?;
         let comments = if req.include_comments {
@@ -130,7 +130,7 @@ impl JiraSource {
             let http = Self::apply_auth(
                 self.client.get(&url),
                 req.token.as_deref(),
-                req.jira_email.as_deref(),
+                req.account_email.as_deref(),
             )
             .query(&[
                 ("startAt", start_at.to_string()),
@@ -140,7 +140,7 @@ impl JiraSource {
             let page: JiraCommentsPage = parse_jira_json(
                 resp,
                 req.token.as_deref(),
-                req.jira_email.as_deref(),
+                req.account_email.as_deref(),
                 "comment fetch",
             )?;
             trace!(
@@ -213,14 +213,14 @@ impl JiraSource {
             let http = Self::apply_auth(
                 self.client.get(&url),
                 req.token.as_deref(),
-                req.jira_email.as_deref(),
+                req.account_email.as_deref(),
             )
             .query(&query_params);
             let resp = Self::send(http, "search")?;
             let page: JiraSearchResponse = parse_jira_json(
                 resp,
                 req.token.as_deref(),
-                req.jira_email.as_deref(),
+                req.account_email.as_deref(),
                 "search",
             )?;
             trace!(count = page.issues.len(), "decoded Jira search page");
@@ -473,7 +473,7 @@ fn quote_jql(value: &str) -> String {
 fn parse_jira_json<T: for<'de> Deserialize<'de>>(
     resp: Response,
     token: Option<&str>,
-    jira_email: Option<&str>,
+    account_email: Option<&str>,
     operation: &str,
 ) -> Result<T> {
     let status = resp.status();
@@ -488,13 +488,13 @@ fn parse_jira_json<T: for<'de> Deserialize<'de>>(
     if !status.is_success() {
         let auth_hint = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             if token.is_some() {
-                if jira_email.is_some() {
+                if account_email.is_some() {
                     " Jira auth failed. Check token format/scope (email:api_token for Atlassian Cloud)."
                 } else {
-                    " Jira auth failed. If this is an Atlassian API token, also set Jira email (--jira-email, JIRA_EMAIL, or [jira].email), or pass --token as email:api_token."
+                    " Jira auth failed. If this is an Atlassian API token, also set account email (--account-email, JIRA_ACCOUNT_EMAIL, or [instances.<alias>].account_email), or pass --token as email:api_token."
                 }
             } else {
-                " No Jira token detected. Set --token, JIRA_TOKEN, or [jira].token."
+                " No Jira token detected. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
             }
         } else {
             ""

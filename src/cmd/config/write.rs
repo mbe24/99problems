@@ -118,9 +118,17 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
                     return Err(anyhow!("per_page must be >= 1."));
                 }
             }
+            InstanceField::Deployment => match raw_value {
+                "cloud" | "selfhosted" => {}
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid deployment '{raw_value}'. Supported: cloud, selfhosted."
+                    ));
+                }
+            },
             InstanceField::Url
             | InstanceField::Token
-            | InstanceField::Email
+            | InstanceField::AccountEmail
             | InstanceField::Repo
             | InstanceField::State => {}
         }

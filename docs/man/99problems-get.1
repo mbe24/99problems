@@ -4,7 +4,7 @@
 .SH NAME
 99problems\-get \- Fetch issue and pull request conversations
 .SH SYNOPSIS
-\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-output\-mode\fR] [\fB\-\-stream\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-jira\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-\-deployment\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-output\-mode\fR] [\fB\-\-stream\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-account\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Fetch issue and pull request conversations
 .SH OPTIONS
@@ -59,6 +59,13 @@ Named instance alias from .99problems ([instances.<alias>])
 \fB\-u\fR, \fB\-\-url\fR \fI<URL>\fR
 Override platform base URL for one\-off runs
 .TP
+\fB\-\-deployment\fR \fI<DEPLOYMENT>\fR
+Bitbucket deployment type (required for \-\-platform bitbucket)
+.br
+
+.br
+[\fIpossible values: \fRcloud, selfhosted]
+.TP
 \fB\-t\fR, \fB\-\-type\fR \fI<KIND>\fR
 Content type to fetch [default: issue]
 .br
@@ -95,8 +102,8 @@ Write output to a file (default: stdout)
 \fB\-k\fR, \fB\-\-token\fR \fI<TOKEN>\fR
 Personal access token (overrides env var and dotfile)
 .TP
-\fB\-\-jira\-email\fR \fI<JIRA_EMAIL>\fR
-Jira account email used with API tokens (for Atlassian Cloud basic auth)
+\fB\-\-account\-email\fR \fI<ACCOUNT_EMAIL>\fR
+Account email used with API tokens for Jira/Bitbucket Cloud basic auth
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
