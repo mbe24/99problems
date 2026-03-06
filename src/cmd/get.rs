@@ -154,7 +154,7 @@ pub(crate) struct GetArgs {
     #[arg(long, value_enum)]
     pub(crate) deployment: Option<DeploymentType>,
 
-    /// Content type to fetch [default: issue]
+    /// Content type to fetch (Bitbucket supports pull requests only; omitted type defaults to pr)
     #[arg(short = 't', long = "type", value_enum)]
     pub(crate) kind: Option<ContentType>,
 
@@ -186,7 +186,7 @@ pub(crate) struct GetArgs {
     #[arg(short = 'k', long)]
     pub(crate) token: Option<String>,
 
-    /// Account email used with API tokens for Jira/Bitbucket Cloud basic auth
+    /// Account email used with Jira API-token basic auth
     #[arg(long)]
     pub(crate) account_email: Option<String>,
 }
@@ -285,6 +285,12 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
         )
         .into());
     }
+    if cfg.platform == "bitbucket" && cfg.kind == "issue" && cfg.kind_explicit {
+        return Err(AppError::usage(
+            "Platform 'bitbucket' supports pull requests only. Use --type pr or omit --type.",
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -304,6 +310,12 @@ fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
 fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     let repo = cfg.repo.clone();
     let state = cfg.state.clone();
+    let is_bitbucket = cfg.platform == "bitbucket";
+    let effective_kind = if is_bitbucket && cfg.kind == "issue" && !cfg.kind_explicit {
+        "pr"
+    } else {
+        cfg.kind.as_str()
+    };
 
     if let Some(id) = &args.id {
         let ignored_flags = ignored_flags_in_id_mode(args);
@@ -314,12 +326,11 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
             );
         }
 
-        let id_kind = if cfg.kind == "pr" {
+        let id_kind = if effective_kind == "pr" {
             ContentKind::Pr
         } else {
             ContentKind::Issue
         };
-        let kind_explicit = args.kind.is_some() || cfg.kind == "pr";
 
         let repo_for_id = if cfg.platform == "jira" {
             repo.unwrap_or_default()
@@ -332,7 +343,11 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
                 repo: repo_for_id,
                 id: id.clone(),
                 kind: id_kind,
-                allow_fallback_to_pr: !kind_explicit && matches!(id_kind, ContentKind::Issue),
+                allow_fallback_to_pr: if is_bitbucket {
+                    false
+                } else {
+                    !cfg.kind_explicit && matches!(id_kind, ContentKind::Issue)
+                },
             },
             per_page: cfg.per_page,
             token: cfg.token.clone(),
@@ -344,7 +359,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
 
     let query = Query::build(
         args.query.clone(),
-        &cfg.kind,
+        effective_kind,
         repo,
         state,
         args.labels.clone(),
@@ -513,6 +528,8 @@ fn looks_like_atlassian_api_token(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::source::FetchTarget;
 
     fn args() -> GetArgs {
         GetArgs {
@@ -537,6 +554,21 @@ mod tests {
             output: None,
             token: None,
             account_email: None,
+        }
+    }
+
+    fn bitbucket_config(deployment: &str, kind: &str, kind_explicit: bool) -> Config {
+        Config {
+            platform: "bitbucket".into(),
+            kind: kind.into(),
+            kind_explicit,
+            token: None,
+            account_email: None,
+            repo: Some("PROJECT/repo".into()),
+            state: None,
+            deployment: Some(deployment.into()),
+            per_page: 100,
+            platform_url: Some("https://bitbucket.example.com".into()),
         }
     }
 
@@ -576,5 +608,51 @@ mod tests {
         args.format = Some(OutputFormat::Ndjson);
         let plan = resolve_output_plan_with_tty(&args, false);
         assert!(matches!(plan.format, ResolvedOutputFormat::Jsonl));
+    }
+
+    #[test]
+    fn bitbucket_id_defaults_to_pr_when_kind_is_implicit() {
+        let cfg = bitbucket_config("cloud", "issue", false);
+        let req = build_fetch_request(&cfg, &args()).unwrap();
+        match req.target {
+            FetchTarget::Id {
+                kind,
+                allow_fallback_to_pr,
+                ..
+            } => {
+                assert!(matches!(kind, ContentKind::Pr));
+                assert!(!allow_fallback_to_pr);
+            }
+            FetchTarget::Search { .. } => panic!("expected id target"),
+        }
+    }
+
+    #[test]
+    fn bitbucket_cloud_explicit_issue_is_rejected() {
+        let cfg = bitbucket_config("cloud", "issue", true);
+        let err = emit_get_warnings(&cfg, &args()).unwrap_err().to_string();
+        assert!(err.contains("supports pull requests only"));
+    }
+
+    #[test]
+    fn bitbucket_selfhosted_explicit_issue_is_rejected() {
+        let cfg = bitbucket_config("selfhosted", "issue", true);
+        let err = emit_get_warnings(&cfg, &args()).unwrap_err().to_string();
+        assert!(err.contains("supports pull requests only"));
+    }
+
+    #[test]
+    fn bitbucket_search_defaults_to_pr_when_kind_is_implicit() {
+        let cfg = bitbucket_config("cloud", "issue", false);
+        let mut args = args();
+        args.id = None;
+        let req = build_fetch_request(&cfg, &args).unwrap();
+        match req.target {
+            FetchTarget::Search { raw_query } => {
+                assert!(raw_query.contains("is:pr"));
+                assert!(!raw_query.contains("is:issue"));
+            }
+            FetchTarget::Id { .. } => panic!("expected search target"),
+        }
     }
 }

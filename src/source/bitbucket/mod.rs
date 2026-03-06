@@ -5,11 +5,10 @@ use super::{FetchRequest, Source};
 use crate::error::AppError;
 use crate::model::Conversation;
 
-mod api;
 mod cloud;
 mod datacenter;
-mod model;
 mod query;
+mod shared;
 
 const BITBUCKET_CLOUD_API_BASE: &str = "https://api.bitbucket.org/2.0";
 const PAGE_SIZE: u32 = 50;
@@ -34,9 +33,9 @@ impl BitbucketDeployment {
 }
 
 pub struct BitbucketSource {
-    client: Client,
+    pub(super) client: Client,
     deployment: BitbucketDeployment,
-    base_url: String,
+    pub(super) base_url: String,
 }
 
 impl BitbucketSource {

@@ -28,6 +28,7 @@ pub struct DotfileConfig {
 pub struct Config {
     pub platform: String,
     pub kind: String,
+    pub kind_explicit: bool,
     pub token: Option<String>,
     pub account_email: Option<String>,
     pub repo: Option<String>,
@@ -203,13 +204,18 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
         .map(std::borrow::ToOwned::to_owned)
         .or_else(|| account_email_env_var(&platform).and_then(|var| std::env::var(var).ok()))
         .or_else(|| instance.account_email.clone());
+    let (kind, kind_explicit) = if let Some(kind) = opts.kind {
+        (kind.to_string(), true)
+    } else if let Some(kind) = instance.kind.as_deref() {
+        (kind.to_string(), true)
+    } else {
+        ("issue".to_string(), false)
+    };
 
     Ok(Config {
         platform,
-        kind: opts
-            .kind
-            .unwrap_or(instance.kind.as_deref().unwrap_or("issue"))
-            .to_string(),
+        kind,
+        kind_explicit,
         token,
         account_email,
         repo: opts
@@ -247,10 +253,16 @@ fn resolve_cli_only_mode(opts: ResolveOptions<'_>) -> Result<Config> {
         .account_email
         .map(std::borrow::ToOwned::to_owned)
         .or_else(|| account_email_env_var(&platform).and_then(|var| std::env::var(var).ok()));
+    let (kind, kind_explicit) = if let Some(kind) = opts.kind {
+        (kind.to_string(), true)
+    } else {
+        ("issue".to_string(), false)
+    };
 
     Ok(Config {
         platform,
-        kind: opts.kind.unwrap_or("issue").to_string(),
+        kind,
+        kind_explicit,
         token,
         account_email,
         repo: opts.repo.map(std::borrow::ToOwned::to_owned),
@@ -397,7 +409,6 @@ pub fn token_env_var(platform: &str) -> &'static str {
 pub fn account_email_env_var(platform: &str) -> Option<&'static str> {
     match platform {
         "jira" => Some("JIRA_ACCOUNT_EMAIL"),
-        "bitbucket" => Some("BITBUCKET_ACCOUNT_EMAIL"),
         _ => None,
     }
 }
@@ -490,6 +501,8 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.platform, "gitlab");
         assert_eq!(cfg.repo.as_deref(), Some("group/project"));
+        assert_eq!(cfg.kind, "issue");
+        assert!(!cfg.kind_explicit);
     }
 
     #[test]
@@ -585,6 +598,7 @@ mod tests {
         assert_eq!(cfg.repo.as_deref(), Some("override/repo"));
         assert_eq!(cfg.state.as_deref(), Some("closed"));
         assert_eq!(cfg.kind, "pr");
+        assert!(cfg.kind_explicit);
     }
 
     #[test]
@@ -601,6 +615,8 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.platform, "github");
         assert_eq!(cfg.repo.as_deref(), Some("owner/repo"));
+        assert_eq!(cfg.kind, "issue");
+        assert!(!cfg.kind_explicit);
     }
 
     #[test]
