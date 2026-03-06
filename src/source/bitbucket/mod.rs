@@ -5,12 +5,14 @@ use super::{FetchRequest, Source};
 use crate::error::AppError;
 use crate::model::Conversation;
 
-mod auth;
+mod api;
 mod cloud;
-mod dc;
+mod datacenter;
+mod model;
 mod query;
 
 const BITBUCKET_CLOUD_API_BASE: &str = "https://api.bitbucket.org/2.0";
+const PAGE_SIZE: u32 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BitbucketDeployment {
@@ -83,7 +85,7 @@ impl Source for BitbucketSource {
     ) -> Result<usize> {
         match self.deployment {
             BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
-            BitbucketDeployment::Selfhosted => self.fetch_dc_stream(req, emit),
+            BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit),
         }
     }
 }

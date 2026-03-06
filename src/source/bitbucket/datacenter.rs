@@ -6,7 +6,7 @@ use crate::model::Conversation;
 use crate::source::FetchRequest;
 
 impl BitbucketSource {
-    pub(super) fn fetch_dc_stream(
+    pub(super) fn fetch_datacenter_stream(
         &self,
         _req: &FetchRequest,
         _emit: &mut dyn FnMut(Conversation) -> Result<()>,
