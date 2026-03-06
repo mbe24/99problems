@@ -1,14 +1,15 @@
 use anyhow::Result;
 use reqwest::blocking::{RequestBuilder, Response};
 use serde::Deserialize;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::model::{
     ConversationSeed, IssueCommentItem, ReviewCommentItem, map_issue_comment, map_review_comment,
+    map_timeline_links,
 };
 use super::{GITHUB_API_BASE, GITHUB_API_VERSION, GitHubSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
 use crate::source::FetchRequest;
 
 impl GitHubSource {
@@ -102,6 +103,26 @@ impl GitHubSource {
         Ok(raw_comments.into_iter().map(map_review_comment).collect())
     }
 
+    pub(super) fn fetch_links(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<ConversationMetadata> {
+        if !req.include_links {
+            return Ok(ConversationMetadata::empty());
+        }
+
+        let timeline_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/timeline");
+        let events: Vec<serde_json::Value> =
+            self.get_pages(&timeline_url, req.token.as_deref(), req.per_page)?;
+        let mut links: Vec<ConversationLink> = Vec::new();
+        for event in events {
+            links.extend(map_timeline_links(&event));
+        }
+        Ok(ConversationMetadata::with_links(links))
+    }
+
     pub(super) fn fetch_conversation(
         &self,
         repo: &str,
@@ -116,6 +137,22 @@ impl GitHubSource {
                 comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
+        let metadata = if req.include_links {
+            match self.fetch_links(repo, item.id, req) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    warn!(
+                        id = item.id,
+                        repo,
+                        error = %err,
+                        "GitHub links fetch failed; continuing without links"
+                    );
+                    ConversationMetadata::empty()
+                }
+            }
+        } else {
+            ConversationMetadata::empty()
+        };
 
         Ok(Conversation {
             id: item.id.to_string(),
@@ -123,6 +160,7 @@ impl GitHubSource {
             state: item.state,
             body: item.body,
             comments,
+            metadata,
         })
     }
 }

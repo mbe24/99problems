@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::model::ConversationLink;
+
 #[derive(Deserialize)]
 pub(super) struct JiraSearchResponse {
     #[serde(rename = "startAt")]
@@ -26,6 +28,8 @@ pub(super) struct JiraIssueFields {
     pub(super) summary: String,
     pub(super) description: Option<Value>,
     pub(super) status: JiraStatus,
+    #[serde(default)]
+    pub(super) issuelinks: Vec<JiraIssueLinkItem>,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +60,27 @@ pub(super) struct JiraAuthor {
     pub(super) display_name: String,
 }
 
+#[derive(Clone, Deserialize)]
+pub(super) struct JiraIssueLinkItem {
+    #[serde(rename = "type")]
+    pub(super) link_type: Option<JiraIssueLinkType>,
+    #[serde(rename = "inwardIssue")]
+    pub(super) inward_issue: Option<JiraLinkedIssue>,
+    #[serde(rename = "outwardIssue")]
+    pub(super) outward_issue: Option<JiraLinkedIssue>,
+}
+
+#[derive(Clone, Deserialize)]
+pub(super) struct JiraIssueLinkType {
+    pub(super) inward: Option<String>,
+    pub(super) outward: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub(super) struct JiraLinkedIssue {
+    pub(super) key: String,
+}
+
 pub(super) fn extract_adf_text(value: &Value) -> String {
     fn walk(v: &Value, out: &mut Vec<String>) {
         match v {
@@ -81,6 +106,48 @@ pub(super) fn extract_adf_text(value: &Value) -> String {
     chunks.join(" ").trim().to_string()
 }
 
+pub(super) fn map_issue_links(items: Vec<JiraIssueLinkItem>) -> Vec<ConversationLink> {
+    let mut links = Vec::new();
+    for item in items {
+        if let Some(issue) = item.outward_issue {
+            let relation = item
+                .link_type
+                .as_ref()
+                .and_then(|kind| kind.outward.as_deref())
+                .map_or("relates", normalize_relation);
+            links.push(ConversationLink {
+                id: issue.key,
+                relation: relation.to_string(),
+                kind: Some("issue".to_string()),
+            });
+        }
+        if let Some(issue) = item.inward_issue {
+            let relation = item
+                .link_type
+                .as_ref()
+                .and_then(|kind| kind.inward.as_deref())
+                .map_or("relates", normalize_relation);
+            links.push(ConversationLink {
+                id: issue.key,
+                relation: relation.to_string(),
+                kind: Some("issue".to_string()),
+            });
+        }
+    }
+    links
+}
+
+fn normalize_relation(raw: &str) -> &'static str {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("block") && lower.contains("by") {
+        "blocked_by"
+    } else if lower.contains("block") {
+        "blocks"
+    } else {
+        "relates"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +162,40 @@ mod tests {
             ]
         });
         assert_eq!(extract_adf_text(&value), "Hello world");
+    }
+
+    #[test]
+    fn map_issue_links_normalizes_block_relations() {
+        let links = map_issue_links(vec![
+            JiraIssueLinkItem {
+                link_type: Some(JiraIssueLinkType {
+                    inward: Some("is blocked by".to_string()),
+                    outward: Some("blocks".to_string()),
+                }),
+                inward_issue: Some(JiraLinkedIssue {
+                    key: "ABC-1".to_string(),
+                }),
+                outward_issue: Some(JiraLinkedIssue {
+                    key: "ABC-2".to_string(),
+                }),
+            },
+            JiraIssueLinkItem {
+                link_type: Some(JiraIssueLinkType {
+                    inward: Some("relates to".to_string()),
+                    outward: Some("relates to".to_string()),
+                }),
+                inward_issue: None,
+                outward_issue: Some(JiraLinkedIssue {
+                    key: "ABC-3".to_string(),
+                }),
+            },
+        ]);
+
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[0].id, "ABC-2");
+        assert_eq!(links[0].relation, "blocks");
+        assert_eq!(links[1].id, "ABC-1");
+        assert_eq!(links[1].relation, "blocked_by");
+        assert_eq!(links[2].relation, "relates");
     }
 }

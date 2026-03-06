@@ -1,5 +1,5 @@
 use super::StreamFormatter;
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationLink};
 use anyhow::Result;
 use std::io::Write;
 
@@ -35,6 +35,10 @@ impl StreamFormatter for TextFormatter {
         for (idx, comment) in conversation.comments.iter().enumerate() {
             render_comment(out, idx, comment)?;
         }
+        writeln!(out, "links: {}", conversation.metadata.link_count)?;
+        for (idx, link) in conversation.metadata.links.iter().enumerate() {
+            render_link(out, idx, link)?;
+        }
         writeln!(out, "---")?;
         Ok(())
     }
@@ -68,6 +72,20 @@ fn render_comment(out: &mut dyn Write, index: usize, comment: &Comment) -> Resul
         out,
         "      {}",
         comment.body.as_deref().unwrap_or("(no body)")
+    )?;
+    Ok(())
+}
+
+fn render_link(out: &mut dyn Write, index: usize, link: &ConversationLink) -> Result<()> {
+    writeln!(
+        out,
+        "  [{}] relation={}{} id={}",
+        index + 1,
+        link.relation,
+        link.kind
+            .as_deref()
+            .map_or(String::new(), |kind| format!(" kind={kind}")),
+        link.id
     )?;
     Ok(())
 }

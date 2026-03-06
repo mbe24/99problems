@@ -135,6 +135,12 @@ The `Man Drift` workflow verifies generated output stays in sync with committed 
 - `--format`: `json`, `yaml`, `jsonl`, `ndjson` (alias of `jsonl`), `text`
 - `--output-mode`: `auto`, `batch`, `stream` (or `--stream`)
 
+Payload controls:
+
+- `--no-comments`: skip issue/PR comments
+- `--include-review-comments`: include inline review comments (for PRs)
+- `--no-links`: skip linked-issue/PR metadata
+
 Defaults:
 
 - TTY stdout: `--format text`, `--output-mode auto` (resolved to streaming)

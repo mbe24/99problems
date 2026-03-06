@@ -5,10 +5,10 @@ use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tracing::{debug, trace};
 
-use super::model::{JiraCommentsPage, JiraIssueItem, extract_adf_text};
+use super::model::{JiraCommentsPage, JiraIssueItem, extract_adf_text, map_issue_links};
 use super::{JiraSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata};
 use crate::source::FetchRequest;
 
 impl JiraSource {
@@ -41,7 +41,7 @@ impl JiraSource {
     }
 
     pub(super) fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
-        let fields = "summary,description,status";
+        let fields = "summary,description,status,issuelinks";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
         let http = Self::apply_auth(
             self.client.get(&url),
@@ -77,22 +77,28 @@ impl JiraSource {
             req.account_email.as_deref(),
             "issue fetch",
         )?;
+        let fields = issue.fields;
         let comments = if req.include_comments {
             self.fetch_comments(&issue.key, req)?
         } else {
             vec![]
         };
+        let metadata = if req.include_links {
+            ConversationMetadata::with_links(map_issue_links(fields.issuelinks))
+        } else {
+            ConversationMetadata::empty()
+        };
         Ok(Conversation {
             id: issue.key,
-            title: issue.fields.summary,
-            state: issue.fields.status.name,
-            body: issue
-                .fields
+            title: fields.summary,
+            state: fields.status.name,
+            body: fields
                 .description
                 .as_ref()
                 .map(extract_adf_text)
                 .filter(|s| !s.is_empty()),
             comments,
+            metadata,
         })
     }
 

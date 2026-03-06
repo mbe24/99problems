@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::model::Comment;
+use crate::model::{Comment, ConversationLink};
 
 #[derive(Deserialize)]
 pub(super) struct GitLabIssueItem {
@@ -54,6 +54,23 @@ pub(super) struct GitLabPosition {
     pub(super) old_line: Option<u64>,
 }
 
+#[derive(Deserialize)]
+pub(super) struct GitLabIssueLinkItem {
+    pub(super) link_type: Option<String>,
+    pub(super) source_issue: Option<GitLabLinkIssueRef>,
+    pub(super) target_issue: Option<GitLabLinkIssueRef>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+pub(super) struct GitLabLinkIssueRef {
+    pub(super) iid: u64,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+pub(super) struct GitLabMergeRequestRef {
+    pub(super) iid: u64,
+}
+
 pub(super) struct ConversationSeed {
     pub(super) id: u64,
     pub(super) title: String,
@@ -98,5 +115,101 @@ pub(super) fn map_review_comment(note: GitLabDiscussionNote) -> Comment {
         review_path,
         review_line,
         review_side,
+    }
+}
+
+pub(super) fn map_issue_link(
+    item: &GitLabIssueLinkItem,
+    current_iid: u64,
+) -> Option<ConversationLink> {
+    let source_iid = item.source_issue.as_ref().map(|issue| issue.iid);
+    let target_iid = item.target_issue.as_ref().map(|issue| issue.iid);
+    let relation = item
+        .link_type
+        .as_deref()
+        .map_or("relates", normalize_relation);
+
+    if source_iid == Some(current_iid) {
+        target_iid.map(|iid| ConversationLink {
+            id: iid.to_string(),
+            relation: relation.to_string(),
+            kind: Some("issue".to_string()),
+        })
+    } else if target_iid == Some(current_iid) {
+        source_iid.map(|iid| ConversationLink {
+            id: iid.to_string(),
+            relation: invert_relation(relation).to_string(),
+            kind: Some("issue".to_string()),
+        })
+    } else {
+        None
+    }
+}
+
+pub(super) fn map_closed_by_link(mr: GitLabMergeRequestRef) -> ConversationLink {
+    ConversationLink {
+        id: mr.iid.to_string(),
+        relation: "closed_by".to_string(),
+        kind: Some("pr".to_string()),
+    }
+}
+
+pub(super) fn map_closes_issue_link(issue: GitLabLinkIssueRef) -> ConversationLink {
+    ConversationLink {
+        id: issue.iid.to_string(),
+        relation: "closes".to_string(),
+        kind: Some("issue".to_string()),
+    }
+}
+
+fn normalize_relation(link_type: &str) -> &'static str {
+    match link_type {
+        "blocks" => "blocks",
+        "is_blocked_by" => "blocked_by",
+        _ => "relates",
+    }
+}
+
+fn invert_relation(relation: &str) -> &'static str {
+    match relation {
+        "blocks" => "blocked_by",
+        "blocked_by" => "blocks",
+        _ => "relates",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_issue_link_inverts_relation_for_target_side() {
+        let link = map_issue_link(
+            &GitLabIssueLinkItem {
+                link_type: Some("blocks".to_string()),
+                source_issue: Some(GitLabLinkIssueRef { iid: 10 }),
+                target_issue: Some(GitLabLinkIssueRef { iid: 20 }),
+            },
+            20,
+        )
+        .expect("expected mapped link");
+        assert_eq!(link.id, "10");
+        assert_eq!(link.relation, "blocked_by");
+        assert_eq!(link.kind.as_deref(), Some("issue"));
+    }
+
+    #[test]
+    fn map_issue_link_preserves_relation_for_source_side() {
+        let link = map_issue_link(
+            &GitLabIssueLinkItem {
+                link_type: Some("is_blocked_by".to_string()),
+                source_issue: Some(GitLabLinkIssueRef { iid: 11 }),
+                target_issue: Some(GitLabLinkIssueRef { iid: 22 }),
+            },
+            11,
+        )
+        .expect("expected mapped link");
+        assert_eq!(link.id, "22");
+        assert_eq!(link.relation, "blocked_by");
     }
 }

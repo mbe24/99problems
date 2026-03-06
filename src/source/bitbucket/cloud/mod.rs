@@ -6,7 +6,7 @@ use self::model::{
 use super::BitbucketSource;
 use super::query::{BitbucketFilters, parse_bitbucket_query, parse_workspace_repo};
 use crate::error::AppError;
-use crate::model::Conversation;
+use crate::model::{Conversation, ConversationMetadata};
 use crate::source::{ContentKind, FetchRequest, FetchTarget};
 
 mod api;
@@ -143,6 +143,7 @@ impl BitbucketSource {
             state: item.state,
             body,
             comments,
+            metadata: ConversationMetadata::empty(),
         })
     }
 

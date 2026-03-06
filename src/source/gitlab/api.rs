@@ -4,16 +4,17 @@ use anyhow::Result;
 use reqwest::StatusCode;
 use reqwest::blocking::{RequestBuilder, Response};
 use serde::Deserialize;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::model::{
-    ConversationSeed, GitLabDiscussion, GitLabIssueItem, GitLabMergeRequestItem, GitLabNote,
-    map_note_comment, map_review_comment,
+    ConversationSeed, GitLabDiscussion, GitLabIssueItem, GitLabIssueLinkItem, GitLabLinkIssueRef,
+    GitLabMergeRequestItem, GitLabMergeRequestRef, GitLabNote, map_closed_by_link,
+    map_closes_issue_link, map_issue_link, map_note_comment, map_review_comment,
 };
 use super::query::encode_project_path;
 use super::{GitLabSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
 use crate::source::FetchRequest;
 
 impl GitLabSource {
@@ -231,6 +232,57 @@ impl GitLabSource {
         Ok(comments)
     }
 
+    pub(super) fn fetch_links(
+        &self,
+        repo: &str,
+        iid: u64,
+        is_pr: bool,
+        req: &FetchRequest,
+    ) -> Result<ConversationMetadata> {
+        if !req.include_links {
+            return Ok(ConversationMetadata::empty());
+        }
+
+        let project = encode_project_path(repo);
+        let mut links: Vec<ConversationLink> = Vec::new();
+        if is_pr {
+            let closes_url = format!(
+                "{}/api/v4/projects/{project}/merge_requests/{iid}/closes_issues",
+                self.base_url
+            );
+            let closed_issues: Vec<GitLabLinkIssueRef> =
+                self.get_pages(&closes_url, &[], req.token.as_deref(), req.per_page, true)?;
+            links.extend(closed_issues.into_iter().map(map_closes_issue_link));
+        } else {
+            let links_url = format!(
+                "{}/api/v4/projects/{project}/issues/{iid}/links",
+                self.base_url
+            );
+            let issue_links: Vec<GitLabIssueLinkItem> =
+                self.get_pages(&links_url, &[], req.token.as_deref(), req.per_page, true)?;
+            links.extend(
+                issue_links
+                    .iter()
+                    .filter_map(|link| map_issue_link(link, iid)),
+            );
+
+            let closed_by_url = format!(
+                "{}/api/v4/projects/{project}/issues/{iid}/closed_by",
+                self.base_url
+            );
+            let closed_by: Vec<GitLabMergeRequestRef> = self.get_pages(
+                &closed_by_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )?;
+            links.extend(closed_by.into_iter().map(map_closed_by_link));
+        }
+
+        Ok(ConversationMetadata::with_links(links))
+    }
+
     pub(super) fn fetch_conversation(
         &self,
         repo: &str,
@@ -245,6 +297,22 @@ impl GitLabSource {
                 comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
+        let metadata = if req.include_links {
+            match self.fetch_links(repo, seed.id, seed.is_pr, req) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    warn!(
+                        id = seed.id,
+                        repo,
+                        error = %err,
+                        "GitLab links fetch failed; continuing without links"
+                    );
+                    ConversationMetadata::empty()
+                }
+            }
+        } else {
+            ConversationMetadata::empty()
+        };
 
         Ok(Conversation {
             id: seed.id.to_string(),
@@ -252,6 +320,7 @@ impl GitLabSource {
             state: seed.state,
             body: seed.body,
             comments,
+            metadata,
         })
     }
 

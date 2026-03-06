@@ -100,6 +100,7 @@ struct OutputPlan {
 }
 
 #[derive(Args, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 #[command(
     next_line_help = true,
     after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --output-mode stream --format jsonl"
@@ -178,6 +179,10 @@ pub(crate) struct GetArgs {
     #[arg(long)]
     pub(crate) no_comments: bool,
 
+    /// Skip fetching related links metadata (faster, smaller output)
+    #[arg(long)]
+    pub(crate) no_links: bool,
+
     /// Write output to a file (default: stdout)
     #[arg(short = 'o', long)]
     pub(crate) output: Option<String>,
@@ -209,6 +214,7 @@ pub(crate) fn run(args: &GetArgs) -> Result<()> {
         kind = %cfg.kind,
         include_comments = !args.no_comments,
         include_review_comments = args.include_review_comments,
+        include_links = !args.no_links,
         output_mode = ?output_plan.mode,
         output_format = ?output_plan.format,
         "resolved get configuration"
@@ -354,6 +360,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
             account_email: cfg.account_email.clone(),
             include_comments: !args.no_comments,
             include_review_comments: args.include_review_comments,
+            include_links: !args.no_links,
         });
     }
 
@@ -385,6 +392,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
         account_email: cfg.account_email.clone(),
         include_comments: !args.no_comments,
         include_review_comments: args.include_review_comments,
+        include_links: !args.no_links,
     })
 }
 
@@ -551,6 +559,7 @@ mod tests {
             stream: false,
             include_review_comments: false,
             no_comments: false,
+            no_links: false,
             output: None,
             token: None,
             account_email: None,
@@ -654,5 +663,15 @@ mod tests {
             }
             FetchTarget::Id { .. } => panic!("expected search target"),
         }
+    }
+
+    #[test]
+    fn build_fetch_request_respects_no_links_flag() {
+        let cfg = bitbucket_config("cloud", "issue", false);
+        let mut args = args();
+        args.id = None;
+        args.no_links = true;
+        let req = build_fetch_request(&cfg, &args).unwrap();
+        assert!(!req.include_links);
     }
 }
