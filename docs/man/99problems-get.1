@@ -67,7 +67,7 @@ Bitbucket deployment type (required for \-\-platform bitbucket)
 [\fIpossible values: \fRcloud, selfhosted]
 .TP
 \fB\-t\fR, \fB\-\-type\fR \fI<KIND>\fR
-Content type to fetch [default: issue]
+Content type to fetch (Bitbucket supports pull requests only; omitted type defaults to pr)
 .br
 
 .br
@@ -103,7 +103,7 @@ Write output to a file (default: stdout)
 Personal access token (overrides env var and dotfile)
 .TP
 \fB\-\-account\-email\fR \fI<ACCOUNT_EMAIL>\fR
-Account email used with API tokens for Jira/Bitbucket Cloud basic auth
+Account email used with Jira API\-token basic auth
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

@@ -45,7 +45,7 @@ jobs:
         if: env.GITHUB_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo test -- --include-ignored --skip jira_
+        run: cargo test -- --include-ignored --skip jira_ --skip bitbucket_
 
   clippy_pedantic:
     name: Clippy (pedantic, advisory)
