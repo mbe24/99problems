@@ -4,11 +4,15 @@
 /// - `GITHUB_TOKEN`=...
 /// - `GITLAB_TOKEN`=...
 /// - `JIRA_TOKEN`=...
+/// - `BITBUCKET_TOKEN`=...
+/// - `BITBUCKET_ACCOUNT_EMAIL`=... (optional unless token requires basic auth)
+/// - `BITBUCKET_REPO`=`workspace/repo_slug`
+/// - `BITBUCKET_PR_ID`=numeric pull request id
 #[cfg(test)]
 mod tests {
     use problems99::source::{
-        ContentKind, FetchRequest, FetchTarget, Source, github::GitHubSource, gitlab::GitLabSource,
-        jira::JiraSource,
+        ContentKind, FetchRequest, FetchTarget, Source, bitbucket::BitbucketSource,
+        github::GitHubSource, gitlab::GitLabSource, jira::JiraSource,
     };
 
     fn github_token() -> Option<String> {
@@ -28,6 +32,18 @@ mod tests {
 
     fn jira_token() -> Option<String> {
         std::env::var("JIRA_TOKEN").ok()
+    }
+
+    fn bitbucket_token() -> Option<String> {
+        std::env::var("BITBUCKET_TOKEN").ok()
+    }
+
+    fn bitbucket_account_email() -> Option<String> {
+        std::env::var("BITBUCKET_ACCOUNT_EMAIL").ok()
+    }
+
+    fn required_env(var: &str) -> String {
+        std::env::var(var).unwrap_or_else(|_| panic!("missing required env var: {var}"))
     }
 
     fn is_public_jira_login_wall(err: &str) -> bool {
@@ -55,7 +71,7 @@ mod tests {
             },
             per_page: 100,
             token: github_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments,
         }
@@ -76,7 +92,7 @@ mod tests {
             },
             per_page: 100,
             token: github_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         }
@@ -105,7 +121,7 @@ mod tests {
             },
             per_page: 10,
             token: github_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -176,7 +192,7 @@ mod tests {
             },
             per_page: 10,
             token: github_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -216,7 +232,7 @@ mod tests {
             },
             per_page: 50,
             token: gitlab_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -238,7 +254,7 @@ mod tests {
             },
             per_page: 50,
             token: gitlab_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: true,
         };
@@ -257,7 +273,7 @@ mod tests {
             },
             per_page: 10,
             token: gitlab_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -275,7 +291,7 @@ mod tests {
             },
             per_page: 10,
             token: gitlab_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: true,
         };
@@ -296,7 +312,7 @@ mod tests {
             },
             per_page: 50,
             token: jira_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -324,7 +340,7 @@ mod tests {
             },
             per_page: 5,
             token: jira_token(),
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
@@ -354,11 +370,54 @@ mod tests {
             },
             per_page: 5,
             token: None,
-            jira_email: None,
+            account_email: None,
             include_comments: true,
             include_review_comments: false,
         };
         let err = source.fetch(&req).unwrap_err().to_string();
         assert!(err.contains("does not support pull requests"));
+    }
+
+    #[test]
+    #[ignore = "requires live network and BITBUCKET_REPO/BITBUCKET_PR_ID env vars"]
+    fn bitbucket_fetch_pr_with_issue_fallback() {
+        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let repo = required_env("BITBUCKET_REPO");
+        let pr_id = required_env("BITBUCKET_PR_ID");
+        let req = FetchRequest {
+            target: FetchTarget::Id {
+                repo,
+                id: pr_id.clone(),
+                kind: ContentKind::Issue,
+                allow_fallback_to_pr: true,
+            },
+            per_page: 50,
+            token: bitbucket_token(),
+            account_email: bitbucket_account_email(),
+            include_comments: true,
+            include_review_comments: true,
+        };
+        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        assert_eq!(conv.id, pr_id);
+        assert!(!conv.title.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires live network and BITBUCKET_REPO env var"]
+    fn bitbucket_search_pr_results() {
+        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let repo = required_env("BITBUCKET_REPO");
+        let req = FetchRequest {
+            target: FetchTarget::Search {
+                raw_query: format!("repo:{repo} is:pr state:all"),
+            },
+            per_page: 10,
+            token: bitbucket_token(),
+            account_email: bitbucket_account_email(),
+            include_comments: false,
+            include_review_comments: false,
+        };
+        let results = source.fetch(&req).unwrap();
+        assert!(!results.is_empty());
     }
 }

@@ -113,7 +113,7 @@ impl GitLabSource {
                     let hint = if token.is_some() {
                         "GitLab token seems invalid or lacks required scope (use read_api)."
                     } else {
-                        "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
+                        "No GitLab token detected. Set --token, GITLAB_TOKEN, or [instances.<alias>].token."
                     };
                     return Err(AppError::auth(format!(
                         "GitLab API auth error {status}: {hint} {body}"
@@ -171,7 +171,7 @@ impl GitLabSource {
             let hint = if token.is_some() {
                 "GitLab token seems invalid or lacks required scope (use read_api)."
             } else {
-                "No GitLab token detected. Set --token, GITLAB_TOKEN, or [gitlab].token."
+                "No GitLab token detected. Set --token, GITLAB_TOKEN, or [instances.<alias>].token."
             };
             let body = resp.text()?;
             return Err(

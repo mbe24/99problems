@@ -1,0 +1,89 @@
+use anyhow::Result;
+use reqwest::blocking::Client;
+
+use super::{FetchRequest, Source};
+use crate::error::AppError;
+use crate::model::Conversation;
+
+mod auth;
+mod cloud;
+mod dc;
+mod query;
+
+const BITBUCKET_CLOUD_API_BASE: &str = "https://api.bitbucket.org/2.0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BitbucketDeployment {
+    Cloud,
+    Selfhosted,
+}
+
+impl BitbucketDeployment {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "cloud" => Ok(Self::Cloud),
+            "selfhosted" => Ok(Self::Selfhosted),
+            other => Err(AppError::usage(format!(
+                "Invalid bitbucket deployment '{other}'. Supported: cloud, selfhosted."
+            ))
+            .into()),
+        }
+    }
+}
+
+pub struct BitbucketSource {
+    client: Client,
+    deployment: BitbucketDeployment,
+    base_url: String,
+}
+
+impl BitbucketSource {
+    /// Create a Bitbucket source client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deployment is missing/invalid or the HTTP client
+    /// cannot be constructed.
+    pub fn new(platform_url: Option<String>, deployment: Option<String>) -> Result<Self> {
+        let deployment = deployment.ok_or_else(|| {
+            AppError::usage(
+                "Bitbucket deployment is required. Set [instances.<alias>].deployment or pass --deployment (cloud|selfhosted).",
+            )
+        })?;
+        let deployment = BitbucketDeployment::parse(&deployment)?;
+        let base_url = match deployment {
+            BitbucketDeployment::Cloud => BITBUCKET_CLOUD_API_BASE.to_string(),
+            BitbucketDeployment::Selfhosted => platform_url
+                .ok_or_else(|| {
+                    AppError::usage(
+                        "Bitbucket selfhosted deployment requires --url or [instances.<alias>].url.",
+                    )
+                })?
+                .trim_end_matches('/')
+                .to_string(),
+        };
+
+        let client = Client::builder()
+            .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+
+        Ok(Self {
+            client,
+            deployment,
+            base_url,
+        })
+    }
+}
+
+impl Source for BitbucketSource {
+    fn fetch_stream(
+        &self,
+        req: &FetchRequest,
+        emit: &mut dyn FnMut(Conversation) -> Result<()>,
+    ) -> Result<usize> {
+        match self.deployment {
+            BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
+            BitbucketDeployment::Selfhosted => self.fetch_dc_stream(req, emit),
+        }
+    }
+}

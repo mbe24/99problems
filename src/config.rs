@@ -7,12 +7,13 @@ use std::path::PathBuf;
 pub struct InstanceConfig {
     pub platform: Option<String>,
     pub token: Option<String>,
-    pub email: Option<String>,
+    pub account_email: Option<String>,
     pub url: Option<String>,
     pub repo: Option<String>,
     pub state: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    pub deployment: Option<String>,
     pub per_page: Option<u32>,
 }
 
@@ -28,9 +29,10 @@ pub struct Config {
     pub platform: String,
     pub kind: String,
     pub token: Option<String>,
-    pub jira_email: Option<String>,
+    pub account_email: Option<String>,
     pub repo: Option<String>,
     pub state: Option<String>,
+    pub deployment: Option<String>,
     pub per_page: u32,
     pub platform_url: Option<String>,
 }
@@ -41,8 +43,9 @@ pub struct ResolveOptions<'a> {
     pub instance: Option<&'a str>,
     pub url: Option<&'a str>,
     pub kind: Option<&'a str>,
+    pub deployment: Option<&'a str>,
     pub token: Option<&'a str>,
-    pub jira_email: Option<&'a str>,
+    pub account_email: Option<&'a str>,
     pub repo: Option<&'a str>,
     pub state: Option<&'a str>,
 }
@@ -79,11 +82,18 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
             .clone()
             .or_else(|| base.platform.clone()),
         token: override_cfg.token.clone().or_else(|| base.token.clone()),
-        email: override_cfg.email.clone().or_else(|| base.email.clone()),
+        account_email: override_cfg
+            .account_email
+            .clone()
+            .or_else(|| base.account_email.clone()),
         url: override_cfg.url.clone().or_else(|| base.url.clone()),
         repo: override_cfg.repo.clone().or_else(|| base.repo.clone()),
         state: override_cfg.state.clone().or_else(|| base.state.clone()),
         kind: override_cfg.kind.clone().or_else(|| base.kind.clone()),
+        deployment: override_cfg
+            .deployment
+            .clone()
+            .or_else(|| base.deployment.clone()),
         per_page: override_cfg.per_page.or(base.per_page),
     }
 }
@@ -179,19 +189,20 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
     }
 
     let platform = instance_platform.to_string();
+    let deployment = normalize_deployment(
+        &platform,
+        opts.deployment.or(instance.deployment.as_deref()),
+    )?;
     let token = opts
         .token
         .map(std::borrow::ToOwned::to_owned)
         .or_else(|| std::env::var(token_env_var(&platform)).ok())
         .or_else(|| instance.token.clone());
-    let jira_email = if platform == "jira" {
-        opts.jira_email
-            .map(std::borrow::ToOwned::to_owned)
-            .or_else(|| std::env::var("JIRA_EMAIL").ok())
-            .or_else(|| instance.email.clone())
-    } else {
-        None
-    };
+    let account_email = opts
+        .account_email
+        .map(std::borrow::ToOwned::to_owned)
+        .or_else(|| account_email_env_var(&platform).and_then(|var| std::env::var(var).ok()))
+        .or_else(|| instance.account_email.clone());
 
     Ok(Config {
         platform,
@@ -200,7 +211,7 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
             .unwrap_or(instance.kind.as_deref().unwrap_or("issue"))
             .to_string(),
         token,
-        jira_email,
+        account_email,
         repo: opts
             .repo
             .map(std::borrow::ToOwned::to_owned)
@@ -209,6 +220,7 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
             .state
             .map(std::borrow::ToOwned::to_owned)
             .or_else(|| instance.state.clone()),
+        deployment,
         per_page: instance.per_page.unwrap_or(100),
         platform_url: opts
             .url
@@ -225,29 +237,52 @@ fn resolve_cli_only_mode(opts: ResolveOptions<'_>) -> Result<Config> {
     ) {
         return Err(anyhow!("Platform '{platform}' is not yet supported."));
     }
+    let deployment = normalize_deployment(&platform, opts.deployment)?;
 
     let token = opts
         .token
         .map(std::borrow::ToOwned::to_owned)
         .or_else(|| std::env::var(token_env_var(&platform)).ok());
-    let jira_email = if platform == "jira" {
-        opts.jira_email
-            .map(std::borrow::ToOwned::to_owned)
-            .or_else(|| std::env::var("JIRA_EMAIL").ok())
-    } else {
-        None
-    };
+    let account_email = opts
+        .account_email
+        .map(std::borrow::ToOwned::to_owned)
+        .or_else(|| account_email_env_var(&platform).and_then(|var| std::env::var(var).ok()));
 
     Ok(Config {
         platform,
         kind: opts.kind.unwrap_or("issue").to_string(),
         token,
-        jira_email,
+        account_email,
         repo: opts.repo.map(std::borrow::ToOwned::to_owned),
         state: opts.state.map(std::borrow::ToOwned::to_owned),
+        deployment,
         per_page: 100,
         platform_url: opts.url.map(std::borrow::ToOwned::to_owned),
     })
+}
+
+fn normalize_deployment(platform: &str, deployment: Option<&str>) -> Result<Option<String>> {
+    if platform == "bitbucket" {
+        let deployment = deployment.ok_or_else(|| {
+            anyhow!(
+                "Bitbucket deployment is required. Set [instances.<alias>].deployment or pass --deployment (cloud|selfhosted)."
+            )
+        })?;
+        return match deployment {
+            "cloud" | "selfhosted" => Ok(Some(deployment.to_string())),
+            other => Err(anyhow!(
+                "Invalid bitbucket deployment '{other}'. Supported: cloud, selfhosted."
+            )),
+        };
+    }
+
+    if let Some(value) = deployment {
+        return Err(anyhow!(
+            "Deployment is only supported for platform 'bitbucket', got '{platform}' with deployment '{value}'."
+        ));
+    }
+
+    Ok(None)
 }
 
 #[must_use]
@@ -285,7 +320,15 @@ fn parse_dotfile_content(content: &str) -> Result<DotfileConfig> {
 }
 
 fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
-    for key in ["platform", "repo", "state", "type", "per_page"] {
+    for key in [
+        "platform",
+        "repo",
+        "state",
+        "type",
+        "per_page",
+        "account_email",
+        "deployment",
+    ] {
         if table.contains_key(key) {
             return Err(anyhow!("Unsupported top-level key '{key}' in .99problems."));
         }
@@ -295,6 +338,47 @@ fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
             return Err(anyhow!("Legacy section '[{key}]' is not supported."));
         }
     }
+    validate_instance_keys(table)?;
+    Ok(())
+}
+
+fn validate_instance_keys(table: &toml::value::Table) -> Result<()> {
+    let Some(instances) = table.get("instances") else {
+        return Ok(());
+    };
+    let instance_entries = instances
+        .as_table()
+        .ok_or_else(|| anyhow!("Invalid .99problems: 'instances' must be a TOML table."))?;
+
+    for (alias, value) in instance_entries {
+        let cfg_table = value.as_table().ok_or_else(|| {
+            anyhow!("Invalid .99problems: instances.{alias} must be a TOML table.")
+        })?;
+        for key in cfg_table.keys() {
+            if key == "email" {
+                return Err(anyhow!(
+                    "Unsupported key 'instances.{alias}.email'. Use 'instances.{alias}.account_email' instead."
+                ));
+            }
+            if !matches!(
+                key.as_str(),
+                "platform"
+                    | "token"
+                    | "account_email"
+                    | "url"
+                    | "repo"
+                    | "state"
+                    | "type"
+                    | "deployment"
+                    | "per_page"
+            ) {
+                return Err(anyhow!(
+                    "Unsupported key 'instances.{alias}.{key}' in .99problems."
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -306,6 +390,15 @@ pub fn token_env_var(platform: &str) -> &'static str {
         "jira" => "JIRA_TOKEN",
         "bitbucket" => "BITBUCKET_TOKEN",
         _ => "TOKEN",
+    }
+}
+
+#[must_use]
+pub fn account_email_env_var(platform: &str) -> Option<&'static str> {
+    match platform {
+        "jira" => Some("JIRA_ACCOUNT_EMAIL"),
+        "bitbucket" => Some("BITBUCKET_ACCOUNT_EMAIL"),
+        _ => None,
     }
 }
 
@@ -353,6 +446,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Unsupported top-level key 'platform'"));
+    }
+
+    #[test]
+    fn rejects_legacy_instance_email_key() {
+        let err = parse_dotfile_content(
+            r#"
+            [instances.work]
+            platform = "jira"
+            email = "user@example.com"
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("instances.work.email"));
+        assert!(err.contains("account_email"));
+    }
+
+    #[test]
+    fn rejects_unknown_instance_key() {
+        let err = parse_dotfile_content(
+            r#"
+            [instances.work]
+            platform = "github"
+            foo = "bar"
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("instances.work.foo"));
     }
 
     #[test]
@@ -490,11 +612,12 @@ mod tests {
                 InstanceConfig {
                     platform: Some("gitlab".to_string()),
                     token: Some("home-token".to_string()),
-                    email: None,
+                    account_email: None,
                     url: Some("https://home.example".to_string()),
                     repo: Some("group/home".to_string()),
                     state: None,
                     kind: None,
+                    deployment: None,
                     per_page: Some(20),
                 },
             )]),
@@ -506,11 +629,12 @@ mod tests {
                 InstanceConfig {
                     platform: None,
                     token: Some("local-token".to_string()),
-                    email: None,
+                    account_email: None,
                     url: None,
                     repo: Some("group/local".to_string()),
                     state: Some("opened".to_string()),
                     kind: Some("pr".to_string()),
+                    deployment: None,
                     per_page: None,
                 },
             )]),
@@ -525,5 +649,36 @@ mod tests {
         assert_eq!(work.kind.as_deref(), Some("pr"));
         assert_eq!(work.per_page, Some(20));
         assert_eq!(merged.default_instance.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn bitbucket_requires_deployment() {
+        let err = resolve_with_opts(
+            r#"
+            [instances.work]
+            platform = "bitbucket"
+            repo = "workspace/repo"
+            "#,
+            ResolveOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("Bitbucket deployment is required"));
+    }
+
+    #[test]
+    fn deployment_rejected_for_non_bitbucket_platforms() {
+        let err = resolve_from_dotfiles(
+            DotfileConfig::default(),
+            DotfileConfig::default(),
+            ResolveOptions {
+                platform: Some("github"),
+                deployment: Some("cloud"),
+                ..ResolveOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("Deployment is only supported"));
     }
 }

@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 use crate::cmd::config::key::{ConfigKey, InstanceField};
-use crate::config::{DotfileConfig, InstanceConfig, token_env_var};
+use crate::config::{DotfileConfig, InstanceConfig, account_email_env_var, token_env_var};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ReadScope {
@@ -73,10 +73,23 @@ pub(crate) fn list_entries(cfg: &DotfileConfig) -> Vec<(String, String, bool)> {
             );
             push_field(&mut entries, alias, "url", inst.url.as_deref(), false);
             push_field(&mut entries, alias, "token", inst.token.as_deref(), true);
-            push_field(&mut entries, alias, "email", inst.email.as_deref(), false);
+            push_field(
+                &mut entries,
+                alias,
+                "account_email",
+                inst.account_email.as_deref(),
+                false,
+            );
             push_field(&mut entries, alias, "repo", inst.repo.as_deref(), false);
             push_field(&mut entries, alias, "state", inst.state.as_deref(), false);
             push_field(&mut entries, alias, "type", inst.kind.as_deref(), false);
+            push_field(
+                &mut entries,
+                alias,
+                "deployment",
+                inst.deployment.as_deref(),
+                false,
+            );
             if let Some(per_page) = inst.per_page {
                 entries.push((
                     format!("instances.{alias}.per_page"),
@@ -99,10 +112,11 @@ pub(crate) fn get_key_value(cfg: &DotfileConfig, key: &ConfigKey) -> Option<Stri
                 InstanceField::Platform => inst.platform.clone(),
                 InstanceField::Url => inst.url.clone(),
                 InstanceField::Token => inst.token.clone(),
-                InstanceField::Email => inst.email.clone(),
+                InstanceField::AccountEmail => inst.account_email.clone(),
                 InstanceField::Repo => inst.repo.clone(),
                 InstanceField::State => inst.state.clone(),
                 InstanceField::Type => inst.kind.clone(),
+                InstanceField::Deployment => inst.deployment.clone(),
                 InstanceField::PerPage => inst.per_page.map(|v| v.to_string()),
             }
         }
@@ -154,7 +168,15 @@ fn parse_and_validate_dotfile(content: &str) -> Result<DotfileConfig> {
 }
 
 fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
-    for key in ["platform", "repo", "state", "type", "per_page"] {
+    for key in [
+        "platform",
+        "repo",
+        "state",
+        "type",
+        "per_page",
+        "account_email",
+        "deployment",
+    ] {
         if table.contains_key(key) {
             return Err(anyhow!("Unsupported top-level key '{key}' in .99problems."));
         }
@@ -164,6 +186,47 @@ fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
             return Err(anyhow!("Legacy section '[{key}]' is not supported."));
         }
     }
+    validate_instance_keys(table)?;
+    Ok(())
+}
+
+fn validate_instance_keys(table: &toml::value::Table) -> Result<()> {
+    let Some(instances) = table.get("instances") else {
+        return Ok(());
+    };
+    let instance_entries = instances
+        .as_table()
+        .ok_or_else(|| anyhow!("Invalid .99problems: 'instances' must be a TOML table."))?;
+
+    for (alias, value) in instance_entries {
+        let cfg_table = value.as_table().ok_or_else(|| {
+            anyhow!("Invalid .99problems: instances.{alias} must be a TOML table.")
+        })?;
+        for key in cfg_table.keys() {
+            if key == "email" {
+                return Err(anyhow!(
+                    "Unsupported key 'instances.{alias}.email'. Use 'instances.{alias}.account_email' instead."
+                ));
+            }
+            if !matches!(
+                key.as_str(),
+                "platform"
+                    | "token"
+                    | "account_email"
+                    | "url"
+                    | "repo"
+                    | "state"
+                    | "type"
+                    | "deployment"
+                    | "per_page"
+            ) {
+                return Err(anyhow!(
+                    "Unsupported key 'instances.{alias}.{key}' in .99problems."
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -174,11 +237,18 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
             .clone()
             .or_else(|| base.platform.clone()),
         token: override_cfg.token.clone().or_else(|| base.token.clone()),
-        email: override_cfg.email.clone().or_else(|| base.email.clone()),
+        account_email: override_cfg
+            .account_email
+            .clone()
+            .or_else(|| base.account_email.clone()),
         url: override_cfg.url.clone().or_else(|| base.url.clone()),
         repo: override_cfg.repo.clone().or_else(|| base.repo.clone()),
         state: override_cfg.state.clone().or_else(|| base.state.clone()),
         kind: override_cfg.kind.clone().or_else(|| base.kind.clone()),
+        deployment: override_cfg
+            .deployment
+            .clone()
+            .or_else(|| base.deployment.clone()),
         per_page: override_cfg.per_page.or(base.per_page),
     }
 }
@@ -205,10 +275,11 @@ fn apply_env_overrides(cfg: &mut DotfileConfig) {
         {
             instance.token = Some(token);
         }
-        if instance.platform.as_deref() == Some("jira")
-            && let Ok(email) = std::env::var("JIRA_EMAIL")
+        if let Some(platform) = instance.platform.as_deref()
+            && let Some(env_key) = account_email_env_var(platform)
+            && let Ok(account_email) = std::env::var(env_key)
         {
-            instance.email = Some(email);
+            instance.account_email = Some(account_email);
         }
     }
 }

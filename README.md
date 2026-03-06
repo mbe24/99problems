@@ -7,7 +7,7 @@
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
 [![License Info](http://img.shields.io/badge/license-Apache%20License%20v2.0-orange.svg)](https://raw.githubusercontent.com/mbe24/99problems/main/LICENSE)
 
-`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, and Jira.
+`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, Jira, and Bitbucket Cloud.
 It supports machine-readable output (`json`, `yaml`, `jsonl`/`ndjson`) and a human-readable `text` format.
 
 ## Installation
@@ -32,6 +32,9 @@ cargo install problems99
 
 # Fetch Jira issue by key
 99problems get --platform jira --id CLOUD-12817
+
+# Fetch Bitbucket Cloud PR by ID
+99problems get --platform bitbucket --deployment cloud --repo workspace/repo_slug --id 1 --type pr
 
 # Stream as JSON Lines for pipelines
 99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
@@ -84,8 +87,17 @@ platform = "jira"
 url = "https://jira.mycompany.com"
 repo = "CPQ"
 token = "atlassian_api_token"
-email = "user@example.com"
+account_email = "user@example.com"
+
+[instances.bitbucket-cloud]
+platform = "bitbucket"
+deployment = "cloud"
+repo = "workspace/repo_slug"
+token = "username:app_password"
+account_email = "user@example.com"
 ```
+
+For Bitbucket Cloud, prefer `username:app_password` in `token`.
 
 Selection order: `--instance` -> single configured instance -> `default_instance`.
 

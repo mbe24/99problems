@@ -1,6 +1,7 @@
 use crate::model::Conversation;
 use anyhow::Result;
 
+pub mod bitbucket;
 pub mod github;
 pub mod gitlab;
 pub mod jira;
@@ -60,7 +61,7 @@ pub struct FetchRequest {
     pub target: FetchTarget,
     pub per_page: u32,
     pub token: Option<String>,
-    pub jira_email: Option<String>,
+    pub account_email: Option<String>,
     pub include_comments: bool,
     pub include_review_comments: bool,
 }

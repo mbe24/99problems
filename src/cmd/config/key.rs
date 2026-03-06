@@ -11,10 +11,11 @@ pub(crate) enum InstanceField {
     Platform,
     Url,
     Token,
-    Email,
+    AccountEmail,
     Repo,
     State,
     Type,
+    Deployment,
     PerPage,
 }
 
@@ -24,10 +25,11 @@ impl InstanceField {
             InstanceField::Platform => "platform",
             InstanceField::Url => "url",
             InstanceField::Token => "token",
-            InstanceField::Email => "email",
+            InstanceField::AccountEmail => "account_email",
             InstanceField::Repo => "repo",
             InstanceField::State => "state",
             InstanceField::Type => "type",
+            InstanceField::Deployment => "deployment",
             InstanceField::PerPage => "per_page",
         }
     }
@@ -62,14 +64,15 @@ impl ConfigKey {
             "platform" => InstanceField::Platform,
             "url" => InstanceField::Url,
             "token" => InstanceField::Token,
-            "email" => InstanceField::Email,
+            "account_email" => InstanceField::AccountEmail,
             "repo" => InstanceField::Repo,
             "state" => InstanceField::State,
             "type" => InstanceField::Type,
+            "deployment" => InstanceField::Deployment,
             "per_page" => InstanceField::PerPage,
             other => {
                 return Err(anyhow!(
-                    "Unsupported instance field '{other}'. Supported: platform, url, token, email, repo, state, type, per_page."
+                    "Unsupported instance field '{other}'. Supported: platform, url, token, account_email, repo, state, type, deployment, per_page."
                 ));
             }
         };

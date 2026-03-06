@@ -10,8 +10,8 @@ use crate::format::{
     yaml::YamlStreamFormatter,
 };
 use crate::source::{
-    ContentKind, FetchRequest, FetchTarget, Query, Source, github::GitHubSource,
-    gitlab::GitLabSource, jira::JiraSource,
+    ContentKind, FetchRequest, FetchTarget, Query, Source, bitbucket::BitbucketSource,
+    github::GitHubSource, gitlab::GitLabSource, jira::JiraSource,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -60,6 +60,21 @@ impl ContentType {
         match self {
             ContentType::Issue => "issue",
             ContentType::Pr => "pr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub(crate) enum DeploymentType {
+    Cloud,
+    Selfhosted,
+}
+
+impl DeploymentType {
+    fn as_str(&self) -> &str {
+        match self {
+            DeploymentType::Cloud => "cloud",
+            DeploymentType::Selfhosted => "selfhosted",
         }
     }
 }
@@ -135,6 +150,10 @@ pub(crate) struct GetArgs {
     #[arg(short = 'u', long)]
     pub(crate) url: Option<String>,
 
+    /// Bitbucket deployment type (required for --platform bitbucket)
+    #[arg(long, value_enum)]
+    pub(crate) deployment: Option<DeploymentType>,
+
     /// Content type to fetch [default: issue]
     #[arg(short = 't', long = "type", value_enum)]
     pub(crate) kind: Option<ContentType>,
@@ -167,9 +186,9 @@ pub(crate) struct GetArgs {
     #[arg(short = 'k', long)]
     pub(crate) token: Option<String>,
 
-    /// Jira account email used with API tokens (for Atlassian Cloud basic auth)
+    /// Account email used with API tokens for Jira/Bitbucket Cloud basic auth
     #[arg(long)]
-    pub(crate) jira_email: Option<String>,
+    pub(crate) account_email: Option<String>,
 }
 
 /// Run the `get` command.
@@ -215,13 +234,15 @@ fn load_config_for_get(args: &GetArgs) -> Result<Config> {
     if args.platform.is_none()
         && args.instance.is_none()
         && args.url.is_none()
+        && args.deployment.is_none()
         && args.kind.is_none()
         && args.token.is_none()
-        && args.jira_email.is_none()
+        && args.account_email.is_none()
         && args.repo.is_none()
         && args.state.is_none()
     {
-        return Config::load();
+        return Config::load()
+            .map_err(|err| AppError::usage(format!("Config error: {err}")).into());
     }
 
     Config::load_with_options(ResolveOptions {
@@ -229,11 +250,13 @@ fn load_config_for_get(args: &GetArgs) -> Result<Config> {
         instance: args.instance.as_deref(),
         url: args.url.as_deref(),
         kind: args.kind.as_ref().map(ContentType::as_str),
+        deployment: args.deployment.as_ref().map(DeploymentType::as_str),
         token: args.token.as_deref(),
-        jira_email: args.jira_email.as_deref(),
+        account_email: args.account_email.as_deref(),
         repo: args.repo.as_deref(),
         state: args.state.as_deref(),
     })
+    .map_err(|err| AppError::usage(format!("Config error: {err}")).into())
 }
 
 fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
@@ -247,10 +270,10 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     if cfg.platform == "jira"
         && let Some(token) = cfg.token.as_deref()
         && looks_like_atlassian_api_token(token)
-        && cfg.jira_email.is_none()
+        && cfg.account_email.is_none()
     {
         warn!(
-            "Warning: Jira token looks like an Atlassian API token. Configure --jira-email, JIRA_EMAIL, or [instances.<alias>].email, or provide --token as email:api_token."
+            "Warning: Jira token looks like an Atlassian API token. Configure --account-email, JIRA_ACCOUNT_EMAIL, or [instances.<alias>].account_email, or provide --token as email:api_token."
         );
     }
     if args.no_comments && args.include_review_comments {
@@ -270,6 +293,10 @@ fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
         "github" => Ok(Box::new(GitHubSource::new()?)),
         "gitlab" => Ok(Box::new(GitLabSource::new(cfg.platform_url.clone())?)),
         "jira" => Ok(Box::new(JiraSource::new(cfg.platform_url.clone())?)),
+        "bitbucket" => Ok(Box::new(BitbucketSource::new(
+            cfg.platform_url.clone(),
+            cfg.deployment.clone(),
+        )?)),
         other => Err(AppError::usage(format!("Platform '{other}' is not yet supported")).into()),
     }
 }
@@ -309,7 +336,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
             },
             per_page: cfg.per_page,
             token: cfg.token.clone(),
-            jira_email: cfg.jira_email.clone(),
+            account_email: cfg.account_email.clone(),
             include_comments: !args.no_comments,
             include_review_comments: args.include_review_comments,
         });
@@ -340,7 +367,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
         },
         per_page: query.per_page,
         token: query.token,
-        jira_email: cfg.jira_email.clone(),
+        account_email: cfg.account_email.clone(),
         include_comments: !args.no_comments,
         include_review_comments: args.include_review_comments,
     })
@@ -500,6 +527,7 @@ mod tests {
             platform: None,
             instance: None,
             url: None,
+            deployment: None,
             kind: None,
             format: None,
             output_mode: None,
@@ -508,7 +536,7 @@ mod tests {
             no_comments: false,
             output: None,
             token: None,
-            jira_email: None,
+            account_email: None,
         }
     }
 
