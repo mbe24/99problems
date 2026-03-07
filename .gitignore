@@ -9,6 +9,7 @@ issue/
 
 # Local config dotfile (may contain tokens)
 .99problems
+.agents/skills/
 
 # Node
 node_modules/

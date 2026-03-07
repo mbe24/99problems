@@ -158,7 +158,8 @@ Use `--output-mode batch` when you want all-or-nothing output at the end.
 
 ## Agent Skill Scaffold
 
-Generate/update the canonical interoperable skill at `.agents/skills/99problems`:
+Canonical editable skill sources live in `templates/skills/99problems`.
+Generate runtime skill files under `.agents/skills/99problems` with:
 
 ```bash
 99problems skill init

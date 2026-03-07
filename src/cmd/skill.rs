@@ -17,157 +17,10 @@ const MAX_DESCRIPTION_LEN: usize = 1024;
 const MAX_COMPATIBILITY_LEN: usize = 500;
 const MAX_SKILL_LINES: usize = 500;
 
-const SKILL_MD: &str = r#"---
-name: 99problems
-description: Fetch and analyze issue and pull request conversations when you need structured engineering context from trackers and code hosts.
-license: Apache-2.0
-compatibility: Requires the `99problems` CLI in PATH. Install or update with npm (`npm install -g @mbe24/99problems`). Cargo installation is also supported.
-metadata:
-  author: Mikael Beyene
-  version: "1.0"
----
-
-# 99problems Skill
-
-## When To Use This Skill
-Use this skill when you need consistent issue or pull-request retrieval from GitHub, GitLab, Jira, or Bitbucket via the `99problems` CLI.
-
-## Required Inputs
-- Provider context via `--instance` or explicit flags (`--platform`, `--repo`, `--url`, `--deployment`)
-- Search query (`-q`) or single identifier (`--id`)
-- Optional token configured in `.99problems` or via environment variables
-
-## Workflow
-1. Resolve the target platform and repository/project.
-2. Choose search mode (`-q`) or direct fetch mode (`--id`).
-3. Select output shape (`--format`, `--output-mode`) and payload controls (`--no-comments`, `--no-links`).
-4. Run `99problems get ...`.
-5. Validate output and hand off to downstream tooling.
-
-## Command Patterns
-### Issue Search
-```bash
-99problems get --instance github -q "repo:owner/repo is:issue state:open label:bug"
-```
-
-### Pull Request Search
-```bash
-99problems get --instance github -q "repo:owner/repo is:pr state:open" --type pr
-```
-
-### Fetch Issue by ID
-```bash
-99problems get --instance github --repo owner/repo --id 1842 --type issue
-```
-
-### Fetch Pull Request by ID
-```bash
-99problems get --instance github --repo owner/repo --id 2402 --type pr --include-review-comments
-```
-
-### Fetch Jira Issue by Key
-```bash
-99problems get --instance jira-work --id CPQ-19831 --type issue
-```
-
-## Output Handling
-- For machine pipelines, prefer `--format jsonl` and stream mode.
-- For human inspection, use default TTY text output or `--format yaml`.
-- Use `--no-links` and `--no-comments` when payload size should be minimized.
-
-## Boundaries
-- Jira supports issues only (no PRs).
-- Bitbucket support is PR-only.
-- This skill does not parse free-text links; use provider APIs and supported flags.
-
-## Troubleshooting
-- Authentication errors: configure token in `.99problems` or env vars.
-- Empty output: verify query qualifiers (`repo:`, `is:issue`, `is:pr`, `state:`).
-- Schema drift checks: regenerate man pages after CLI changes with `99problems man --output docs/man --section 1`.
-
-## Progressive Disclosure
-Keep this file concise. Move detailed recipes to `references/REFERENCE.md` and reusable forms to `references/FORMS.md`.
-
-Optional directories for expansion:
-- `scripts/` for executable helpers
-- `assets/` for static templates/data
-"#;
-
-const REFERENCE_MD: &str = r#"# 99problems Reference
-
-## Core Retrieval Modes
-### Search
-Use `-q` for provider query syntax:
-```bash
-99problems get --instance github -q "repo:owner/repo is:issue state:closed label:security"
-```
-
-### ID Fetch
-Use `--id` plus explicit `--type` when ambiguity is possible:
-```bash
-99problems get --instance github --repo owner/repo --id 2402 --type pr
-```
-
-## Platform Notes
-- GitHub: issues + PRs supported, review comments available.
-- GitLab: issues + merge requests supported.
-- Jira: issues only.
-- Bitbucket: pull requests only.
-
-## Output Guidance
-- Streaming pipelines: `--format jsonl --output-mode stream`
-- Deterministic files: `--format json --output out.json`
-- Smaller payloads: `--no-comments --no-links`
-
-## Configuration Guidance
-Prefer instance-based config:
-```toml
-[instances.github]
-platform = "github"
-repo = "owner/repo"
-token = "ghp_..."
-```
-
-Then call:
-```bash
-99problems get --instance github --id 1842
-```
-"#;
-
-const FORMS_MD: &str = r"# 99problems Forms
-
-## Query Form
-- Instance:
-- Platform (if not using instance):
-- Repo/project:
-- Type (`issue` or `pr`):
-- State:
-- Labels:
-- Author:
-- Since:
-- Raw query (`-q`):
-
-## Fetch-by-ID Form
-- Instance:
-- Repo/project:
-- ID/key:
-- Type:
-- Include review comments? (yes/no):
-- Include links? (yes/no):
-- Include comments? (yes/no):
-
-## Output Profile Form
-- Format (`text|json|yaml|jsonl|ndjson`):
-- Mode (`auto|batch|stream`):
-- Output file path (optional):
-- Payload reductions (`--no-comments`, `--no-links`):
-
-## Validation Checklist
-- Command exits with code 0.
-- Response contains expected `id`/`title`.
-- Comments/review comments presence matches flags.
-- Output format parses successfully in downstream tool.
-";
+const SKILL_MD: &str = include_str!("../../templates/skills/99problems/SKILL.md");
+const REFERENCE_MD: &str =
+    include_str!("../../templates/skills/99problems/references/REFERENCE.md");
+const FORMS_MD: &str = include_str!("../../templates/skills/99problems/references/FORMS.md");
 
 #[derive(Args, Debug)]
 pub(crate) struct SkillArgs {
@@ -439,15 +292,16 @@ mod tests {
     }
 
     #[test]
-    fn canonical_repo_skill_files_match_generator_templates() {
+    fn canonical_template_files_match_generator_templates() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let skill = fs::read_to_string(root.join(".agents/skills/99problems/SKILL.md"))
+        let skill = fs::read_to_string(root.join("templates/skills/99problems/SKILL.md"))
             .expect("expected canonical SKILL.md");
         let reference =
-            fs::read_to_string(root.join(".agents/skills/99problems/references/REFERENCE.md"))
+            fs::read_to_string(root.join("templates/skills/99problems/references/REFERENCE.md"))
                 .expect("expected canonical REFERENCE.md");
-        let forms = fs::read_to_string(root.join(".agents/skills/99problems/references/FORMS.md"))
-            .expect("expected canonical FORMS.md");
+        let forms =
+            fs::read_to_string(root.join("templates/skills/99problems/references/FORMS.md"))
+                .expect("expected canonical FORMS.md");
 
         assert_eq!(normalize_lines(&skill), normalize_lines(SKILL_MD));
         assert_eq!(normalize_lines(&reference), normalize_lines(REFERENCE_MD));
