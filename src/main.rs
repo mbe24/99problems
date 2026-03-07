@@ -48,7 +48,7 @@ enum ErrorFormat {
     subcommand_required = true,
     arg_required_else_help = true,
     next_line_help = true,
-    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get -q \"repo:github/gitignore is:pr 2402\" --include-review-comments\n  99problems man --output docs/man",
+    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get -q \"repo:github/gitignore is:pr 2402\" --include-review-comments\n  99problems skill init\n  99problems man --output docs/man",
     version
 )]
 struct Cli {
@@ -74,6 +74,9 @@ enum Commands {
     #[command(visible_alias = "got")]
     Get(Box<cmd::get::GetArgs>),
 
+    /// Initialize a canonical Agent Skill scaffold for 99problems
+    Skill(cmd::skill::SkillArgs),
+
     /// Inspect and edit .99problems configuration
     Config(cmd::config::ConfigArgs),
 
@@ -96,6 +99,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Get(args) => cmd::get::run(&args),
+        Commands::Skill(args) => cmd::skill::run(&args),
         Commands::Config(args) => cmd::config::run(&args),
         Commands::Completions { shell } => {
             print_completions(shell.as_clap_shell(), &mut std::io::stdout());
@@ -142,7 +146,10 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("1"));
             }
-            Commands::Config(_) | Commands::Completions { .. } | Commands::Man(_) => {
+            Commands::Skill(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
                 panic!("expected get command")
             }
         }
@@ -157,7 +164,10 @@ mod tests {
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("2"));
             }
-            Commands::Config(_) | Commands::Completions { .. } | Commands::Man(_) => {
+            Commands::Skill(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
                 panic!("expected get command")
             }
         }
@@ -175,8 +185,26 @@ mod tests {
         .expect("expected config command to parse");
         match cli.command {
             Commands::Config(_) => {}
-            Commands::Get(_) | Commands::Completions { .. } | Commands::Man(_) => {
+            Commands::Get(_)
+            | Commands::Skill(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
                 panic!("expected config command")
+            }
+        }
+    }
+
+    #[test]
+    fn parses_skill_init_subcommand() {
+        let cli = Cli::try_parse_from(["99problems", "skill", "init"])
+            .expect("expected skill init parse");
+        match cli.command {
+            Commands::Skill(_) => {}
+            Commands::Get(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
+                panic!("expected skill command")
             }
         }
     }
@@ -193,7 +221,7 @@ mod tests {
                 | CompletionShell::Powershell
                 | CompletionShell::Elvish => panic!("expected bash shell"),
             },
-            Commands::Get(_) | Commands::Config(_) | Commands::Man(_) => {
+            Commands::Get(_) | Commands::Skill(_) | Commands::Config(_) | Commands::Man(_) => {
                 panic!("expected completions command")
             }
         }
@@ -258,7 +286,10 @@ mod tests {
             .expect("expected man command to parse");
         match cli.command {
             Commands::Man(_) => {}
-            Commands::Get(_) | Commands::Config(_) | Commands::Completions { .. } => {
+            Commands::Get(_)
+            | Commands::Skill(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. } => {
                 panic!("expected man command")
             }
         }
