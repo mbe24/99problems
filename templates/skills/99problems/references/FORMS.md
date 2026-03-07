@@ -20,6 +20,15 @@
 - Include links? (yes/no):
 - Include comments? (yes/no):
 
+## Retrieved Context Snapshot
+- Current task or goal:
+- Related issue/PR IDs:
+- Key decisions from prior work:
+- Constraints or invariants to preserve:
+- Open questions or unresolved risks:
+- Evidence commands run:
+- Evidence source IDs and links:
+
 ## Output Profile Form
 - Format (`text|json|yaml|jsonl|ndjson`):
 - Mode (`auto|batch|stream`):

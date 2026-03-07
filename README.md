@@ -6,8 +6,15 @@
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
 [![License Info](http://img.shields.io/badge/license-Apache%20License%20v2.0-orange.svg)](https://raw.githubusercontent.com/mbe24/99problems/main/LICENSE)
 
-`99problems` fetches issue and pull request conversations (including comments) from GitHub, GitLab, Jira, and Bitbucket.
-It supports machine-readable output (`json`, `yaml`, `jsonl`/`ndjson`) and a human-readable `text` format.
+`99problems` is an AI-native CLI tool for issue and pull-request context retrieval across GitHub, GitLab, Jira, and Bitbucket.
+It supports structured output for AI agents and direct human usage, with machine-readable formats (`json`, `yaml`, `jsonl`/`ndjson`) and a human-readable `text` format.
+
+## Why This Tool
+
+Software tasks often depend on decisions made in earlier issues and pull requests.
+`99problems` helps recover that history in a consistent shape so current work can be grounded in prior context.
+
+This is useful for Agentic Engineering workflows and for humans doing direct investigation in terminals or scripts.
 
 ## Installation
 
@@ -159,7 +166,7 @@ Use `--output-mode batch` when you want all-or-nothing output at the end.
 ## Agent Skill Scaffold
 
 Canonical editable skill sources live in `templates/skills/99problems`.
-Generate runtime skill files under `.agents/skills/99problems` with:
+Generate a standardized Agent Skills scaffold under `.agents/skills/99problems` with:
 
 ```bash
 99problems skill init

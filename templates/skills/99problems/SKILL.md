@@ -1,6 +1,6 @@
 ---
 name: 99problems
-description: Fetch and analyze issue and pull request conversations when you need structured engineering context from trackers and code hosts.
+description: Retrieve historical issue and pull request context from trackers and code hosts to support current engineering tasks.
 license: Apache-2.0
 compatibility: Requires the `99problems` CLI in PATH. Install or update with npm (`npm install -g @mbe24/99problems`). Cargo installation is also supported.
 metadata:
@@ -11,7 +11,8 @@ metadata:
 # 99problems Skill
 
 ## When To Use This Skill
-Use this skill when you need consistent issue or pull-request retrieval from GitHub, GitLab, Jira, or Bitbucket via the `99problems` CLI.
+Use this skill when current implementation work needs reliable context from prior issues or pull requests in GitHub, GitLab, Jira, or Bitbucket.
+Use it to recover decisions, constraints, and related work items before proposing changes.
 
 ## Required Inputs
 - Provider context via `--instance` or explicit flags (`--platform`, `--repo`, `--url`, `--deployment`)
@@ -20,10 +21,10 @@ Use this skill when you need consistent issue or pull-request retrieval from Git
 
 ## Workflow
 1. Resolve the target platform and repository/project.
-2. Choose search mode (`-q`) or direct fetch mode (`--id`).
-3. Select output shape (`--format`, `--output-mode`) and payload controls (`--no-comments`, `--no-links`).
-4. Run `99problems get ...`.
-5. Validate output and hand off to downstream tooling.
+2. If prior context is likely relevant, start with targeted search (`-q`) to discover related issues/PRs.
+3. Fetch key items by identifier (`--id`) for precise context capture.
+4. Select output shape (`--format`, `--output-mode`) and payload controls (`--no-comments`, `--no-links`).
+5. Run `99problems get ...`, extract constraints/decisions, and hand off a concise context summary.
 
 ## Command Patterns
 ### Issue Search
@@ -51,6 +52,11 @@ Use this skill when you need consistent issue or pull-request retrieval from Git
 99problems get --instance jira-work --id CPQ-19831 --type issue
 ```
 
+### Fetch Bitbucket Pull Request by ID
+```bash
+99problems get --instance bitbucket-cloud --id 1 --type pr --include-review-comments
+```
+
 ## Output Handling
 - For machine pipelines, prefer `--format jsonl` and stream mode.
 - For human inspection, use default TTY text output or `--format yaml`.
@@ -64,7 +70,7 @@ Use this skill when you need consistent issue or pull-request retrieval from Git
 ## Troubleshooting
 - Authentication errors: configure token in `.99problems` or env vars.
 - Empty output: verify query qualifiers (`repo:`, `is:issue`, `is:pr`, `state:`).
-- Schema drift checks: regenerate man pages after CLI changes with `99problems man --output docs/man --section 1`.
+- Unexpected type errors: set `--type` explicitly (`issue` or `pr`) when the target is ambiguous.
 
 ## Progressive Disclosure
 Keep this file concise. Move detailed recipes to `references/REFERENCE.md` and reusable forms to `references/FORMS.md`.
