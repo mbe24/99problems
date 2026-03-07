@@ -3,12 +3,16 @@ use reqwest::StatusCode;
 use reqwest::blocking::{RequestBuilder, Response};
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
-use super::model::{JiraCommentsPage, JiraIssueItem, extract_adf_text};
+use super::model::{
+    JiraCommentsPage, JiraIssueFields, JiraIssueItem, JiraKeySearchResponse, JiraRemoteLinkItem,
+    extract_adf_text, map_attachment_links, map_issue_links, map_parent_child_links,
+    map_remote_links,
+};
 use super::{JiraSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata};
 use crate::source::FetchRequest;
 
 impl JiraSource {
@@ -41,7 +45,7 @@ impl JiraSource {
     }
 
     pub(super) fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
-        let fields = "summary,description,status";
+        let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
         let http = Self::apply_auth(
             self.client.get(&url),
@@ -77,23 +81,154 @@ impl JiraSource {
             req.account_email.as_deref(),
             "issue fetch",
         )?;
+        let fields = issue.fields;
         let comments = if req.include_comments {
             self.fetch_comments(&issue.key, req)?
         } else {
             vec![]
         };
+        let metadata = if req.include_links {
+            self.fetch_metadata(&issue.key, fields.clone(), req)
+        } else {
+            ConversationMetadata::empty()
+        };
         Ok(Conversation {
             id: issue.key,
-            title: issue.fields.summary,
-            state: issue.fields.status.name,
-            body: issue
-                .fields
+            title: fields.summary,
+            state: fields.status.name,
+            body: fields
                 .description
                 .as_ref()
                 .map(extract_adf_text)
                 .filter(|s| !s.is_empty()),
             comments,
+            metadata,
         })
+    }
+
+    pub(super) fn fetch_metadata(
+        &self,
+        issue_key: &str,
+        fields: JiraIssueFields,
+        req: &FetchRequest,
+    ) -> ConversationMetadata {
+        let mut links = map_parent_child_links(&fields);
+        links.extend(map_issue_links(fields.issuelinks));
+        links.extend(map_attachment_links(fields.attachment));
+        match self.fetch_remote_links(issue_key, req) {
+            Ok(remote_links) => links.extend(remote_links),
+            Err(err) => {
+                warn!(
+                    issue_key,
+                    error = %err,
+                    "Jira remote link fetch failed; continuing without remote links"
+                );
+            }
+        }
+        match self.fetch_child_issue_links(issue_key, req) {
+            Ok(child_links) => links.extend(child_links),
+            Err(err) => {
+                warn!(
+                    issue_key,
+                    error = %err,
+                    "Jira child issue lookup failed; continuing without child issue links"
+                );
+            }
+        }
+        ConversationMetadata::with_links(links)
+    }
+
+    fn fetch_remote_links(
+        &self,
+        issue_key: &str,
+        req: &FetchRequest,
+    ) -> Result<Vec<crate::model::ConversationLink>> {
+        let url = format!("{}/rest/api/3/issue/{issue_key}/remotelink", self.base_url);
+        let http = Self::apply_auth(
+            self.client.get(&url),
+            req.token.as_deref(),
+            req.account_email.as_deref(),
+        );
+        let resp = Self::send(http, "remote link fetch")?;
+        let items: Vec<JiraRemoteLinkItem> = Self::parse_jira_json(
+            resp,
+            req.token.as_deref(),
+            req.account_email.as_deref(),
+            "remote link fetch",
+        )?;
+        Ok(map_remote_links(items))
+    }
+
+    fn fetch_child_issue_links(
+        &self,
+        issue_key: &str,
+        req: &FetchRequest,
+    ) -> Result<Vec<crate::model::ConversationLink>> {
+        let per_page = Self::bounded_per_page(req.per_page);
+        let mut start_at = 0u32;
+        let mut next_page_token: Option<String> = None;
+        let mut links = Vec::new();
+        let jql = format!("parent = {issue_key}");
+
+        loop {
+            let url = format!("{}/rest/api/3/search/jql", self.base_url);
+            let mut query_params: Vec<(String, String)> = vec![
+                ("jql".into(), jql.clone()),
+                ("maxResults".into(), per_page.to_string()),
+                ("fields".into(), "key".into()),
+            ];
+            if let Some(token) = &next_page_token {
+                query_params.push(("nextPageToken".into(), token.clone()));
+            } else {
+                query_params.push(("startAt".into(), start_at.to_string()));
+            }
+
+            let http = Self::apply_auth(
+                self.client.get(&url),
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+            )
+            .query(&query_params);
+            let resp = Self::send(http, "child issue search")?;
+            let page: JiraKeySearchResponse = Self::parse_jira_json(
+                resp,
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+                "child issue search",
+            )?;
+
+            for issue in page.issues {
+                links.push(crate::model::ConversationLink {
+                    id: issue.key,
+                    relation: "child".to_string(),
+                    kind: Some("issue".to_string()),
+                });
+            }
+
+            if let Some(token) = page.next_page_token {
+                next_page_token = Some(token);
+                continue;
+            }
+            if let (Some(s), Some(m), Some(t)) = (page.start_at, page.max_results, page.total) {
+                let next = s + m;
+                if next < t {
+                    start_at = next;
+                    next_page_token = None;
+                    continue;
+                }
+                break;
+            }
+            if page.is_last == Some(false) {
+                return Err(AppError::provider(
+                    "Jira child issue search response indicated more pages but provided no pagination cursor.",
+                )
+                .with_provider("jira")
+                .into());
+            }
+            break;
+        }
+
+        Ok(links)
     }
 
     pub(super) fn fetch_comments(

@@ -10,6 +10,7 @@ mod api;
 mod model;
 mod query;
 
+use crate::model::ConversationMetadata;
 use model::{JiraSearchResponse, extract_adf_text};
 use query::{build_jql, parse_jira_query};
 
@@ -68,7 +69,10 @@ impl JiraSource {
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
                 ("maxResults".into(), per_page.to_string()),
-                ("fields".into(), "summary,description,status".into()),
+                (
+                    "fields".into(),
+                    "summary,description,status,parent,subtasks,issuelinks,attachment".into(),
+                ),
             ];
             if let Some(token) = &next_page_token {
                 query_params.push(("nextPageToken".into(), token.clone()));
@@ -91,22 +95,28 @@ impl JiraSource {
             )?;
             trace!(count = page.issues.len(), "decoded Jira search page");
             for issue in page.issues {
+                let fields = issue.fields;
                 let comments = if req.include_comments {
                     self.fetch_comments(&issue.key, req)?
                 } else {
                     vec![]
                 };
+                let metadata = if req.include_links {
+                    self.fetch_metadata(&issue.key, fields.clone(), req)
+                } else {
+                    ConversationMetadata::empty()
+                };
                 emit(Conversation {
                     id: issue.key,
-                    title: issue.fields.summary,
-                    state: issue.fields.status.name,
-                    body: issue
-                        .fields
+                    title: fields.summary,
+                    state: fields.status.name,
+                    body: fields
                         .description
                         .as_ref()
                         .map(extract_adf_text)
                         .filter(|s| !s.is_empty()),
                     comments,
+                    metadata,
                 })?;
                 emitted += 1;
             }

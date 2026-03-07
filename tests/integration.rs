@@ -69,6 +69,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments,
+            include_links: true,
         }
     }
 
@@ -90,6 +91,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         }
     }
 
@@ -119,6 +121,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
@@ -190,6 +193,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
@@ -230,6 +234,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
         assert_eq!(conv.id, "6");
@@ -252,6 +257,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: true,
+            include_links: true,
         };
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
         assert_eq!(conv.id, "6");
@@ -271,6 +277,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
@@ -289,6 +296,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: true,
+            include_links: true,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
@@ -310,6 +318,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let conv = match source.fetch(&req) {
             Ok(results) => results.into_iter().next().unwrap(),
@@ -338,6 +347,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let results = match source.fetch(&req) {
             Ok(results) => results,
@@ -368,6 +378,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: false,
+            include_links: true,
         };
         let err = source.fetch(&req).unwrap_err().to_string();
         assert!(err.contains("does not support pull requests"));
@@ -391,6 +402,7 @@ mod tests {
             account_email: None,
             include_comments: true,
             include_review_comments: true,
+            include_links: true,
         };
         let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
         assert_eq!(conv.id, pr_id);
@@ -411,6 +423,7 @@ mod tests {
             account_email: None,
             include_comments: false,
             include_review_comments: false,
+            include_links: true,
         };
         let results = source.fetch(&req).unwrap();
         assert!(!results.is_empty());
@@ -431,6 +444,7 @@ mod tests {
             account_email: None,
             include_comments: false,
             include_review_comments: false,
+            include_links: true,
         };
         let err = source.fetch(&req).unwrap_err().to_string();
         assert!(err.contains("supports pull requests only"));

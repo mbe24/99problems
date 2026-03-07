@@ -1,13 +1,14 @@
 use anyhow::Result;
+use tracing::warn;
 
 use self::model::{
     BitbucketDcActivityItem, BitbucketDcPullRequestItem, collect_comments_from_activity,
-    matches_pr_filters,
+    map_linked_jira_issues, map_url_links, matches_pr_filters,
 };
 use super::BitbucketSource;
 use super::query::{parse_bitbucket_query, parse_project_repo};
 use crate::error::AppError;
-use crate::model::{Comment, Conversation};
+use crate::model::{Comment, Conversation, ConversationMetadata};
 use crate::source::{ContentKind, FetchRequest, FetchTarget};
 
 mod api;
@@ -148,7 +149,56 @@ impl BitbucketSource {
             state: item.state,
             body: item.description.filter(|body| !body.is_empty()),
             comments,
+            metadata: if req.include_links {
+                match self.fetch_datacenter_links(repo, item.id, item.links.as_ref(), req) {
+                    Ok(metadata) => metadata,
+                    Err(err) => {
+                        warn!(
+                            repo,
+                            id = item.id,
+                            error = %err,
+                            "Bitbucket Data Center links fetch failed; continuing without links"
+                        );
+                        ConversationMetadata::empty()
+                    }
+                }
+            } else {
+                ConversationMetadata::empty()
+            },
         })
+    }
+
+    fn fetch_datacenter_links(
+        &self,
+        repo: &str,
+        id: u64,
+        pr_links: Option<&serde_json::Value>,
+        req: &FetchRequest,
+    ) -> Result<ConversationMetadata> {
+        let mut links = map_url_links(pr_links);
+        links.extend(self.fetch_datacenter_linked_jira_issues(repo, id, req)?);
+        Ok(ConversationMetadata::with_links(links))
+    }
+
+    fn fetch_datacenter_linked_jira_issues(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<Vec<crate::model::ConversationLink>> {
+        let (project, repo_slug) = parse_project_repo(Some(repo))?;
+        let url = format!(
+            "{}/rest/jira/latest/projects/{project}/repos/{repo_slug}/pull-requests/{id}/issues",
+            self.base_url
+        );
+        if let Some(payload) = self.datacenter_get_one::<serde_json::Value>(
+            &url,
+            req.token.as_deref(),
+            "jira issue links fetch",
+        )? {
+            return Ok(map_linked_jira_issues(&payload));
+        }
+        Ok(Vec::new())
     }
 
     fn fetch_datacenter_pr_comments(

@@ -64,6 +64,7 @@ pub struct FetchRequest {
     pub account_email: Option<String>,
     pub include_comments: bool,
     pub include_review_comments: bool,
+    pub include_links: bool,
 }
 
 /// Parsed search parameters passed to a Source.

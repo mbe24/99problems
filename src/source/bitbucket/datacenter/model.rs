@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::super::query::BitbucketFilters;
 use crate::model::Comment;
@@ -19,6 +20,7 @@ pub(super) struct BitbucketDcPullRequestItem {
     pub(super) state: String,
     pub(super) description: Option<String>,
     pub(super) author: Option<BitbucketDcParticipant>,
+    pub(super) links: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +216,60 @@ fn select_author_name(user: &BitbucketDcUser) -> Option<String> {
         .or_else(|| user.slug.clone())
 }
 
+pub(super) fn map_url_links(links: Option<&Value>) -> Vec<crate::model::ConversationLink> {
+    fn collect(value: &Value, out: &mut Vec<crate::model::ConversationLink>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(url) = map.get("href").and_then(Value::as_str) {
+                    out.push(crate::model::ConversationLink {
+                        id: url.to_string(),
+                        relation: "references".to_string(),
+                        kind: Some("url".to_string()),
+                    });
+                }
+                for nested in map.values() {
+                    collect(nested, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(links) = links {
+        collect(links, &mut out);
+    }
+    out
+}
+
+pub(super) fn map_linked_jira_issues(payload: &Value) -> Vec<crate::model::ConversationLink> {
+    let issues = payload
+        .get("values")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    issues
+        .iter()
+        .filter_map(|item| {
+            item.get("key")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("id").and_then(Value::as_str))
+                .map(|id| crate::model::ConversationLink {
+                    id: id.to_string(),
+                    relation: "relates".to_string(),
+                    kind: Some("issue".to_string()),
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +379,29 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind.as_deref(), Some("issue_comment"));
+    }
+
+    #[test]
+    fn maps_dc_links_to_url_references() {
+        let links = serde_json::json!({
+            "self": [{"href": "http://localhost:7990/rest/api/latest/projects/X/repos/Y/pull-requests/1"}]
+        });
+        let mapped = map_url_links(Some(&links));
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].kind.as_deref(), Some("url"));
+    }
+
+    #[test]
+    fn maps_linked_jira_issue_keys() {
+        let payload = serde_json::json!({
+            "values": [
+                {"key": "TEST-1"},
+                {"id": "TEST-2"}
+            ]
+        });
+        let links = map_linked_jira_issues(&payload);
+        assert_eq!(links.len(), 2);
+        assert!(links.iter().all(|l| l.kind.as_deref() == Some("issue")));
+        assert!(links.iter().all(|l| l.relation == "relates"));
     }
 }

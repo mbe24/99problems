@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::super::query::BitbucketFilters;
 use crate::model::Comment;
@@ -18,6 +21,7 @@ pub(super) struct BitbucketPullRequestItem {
     pub(super) summary: Option<BitbucketRichText>,
     pub(super) author: Option<BitbucketUser>,
     pub(super) created_on: Option<String>,
+    pub(super) links: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -171,6 +175,57 @@ fn select_author_name(user: BitbucketUser) -> Option<String> {
     user.nickname.or(user.username).or(user.display_name)
 }
 
+pub(super) fn map_url_links(links: Option<&Value>) -> Vec<crate::model::ConversationLink> {
+    fn collect(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(url) = map.get("href").and_then(Value::as_str)
+                    && is_human_facing_url(url)
+                {
+                    out.push(url.to_string());
+                }
+                for nested in map.values() {
+                    collect(nested, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    if let Some(links) = links {
+        collect(links, &mut out);
+    }
+    dedupe_urls(out)
+        .into_iter()
+        .map(|url| crate::model::ConversationLink {
+            id: url,
+            relation: "references".to_string(),
+            kind: Some("url".to_string()),
+        })
+        .collect()
+}
+
+fn is_human_facing_url(url: &str) -> bool {
+    !url.to_ascii_lowercase().contains("://api.bitbucket.org/")
+}
+
+fn dedupe_urls(urls: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for url in urls {
+        if seen.insert(url.clone()) {
+            deduped.push(url);
+        }
+    }
+    deduped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +262,33 @@ mod tests {
         assert_eq!(mapped.review_path.as_deref(), Some("src/lib.rs"));
         assert_eq!(mapped.review_line, Some(42));
         assert_eq!(mapped.review_side.as_deref(), Some("RIGHT"));
+    }
+
+    #[test]
+    fn maps_only_human_facing_links() {
+        let links = serde_json::json!({
+            "self": {"href": "https://bitbucket.org/workspace/repo/pull-requests/1"},
+            "diff": {"href": "https://api.bitbucket.org/2.0/.../diff"},
+            "commits": {"href": "https://api.bitbucket.org/2.0/.../commits"},
+            "html": {"href": "https://bitbucket.org/workspace/repo/pull-requests/1"}
+        });
+        let mapped = map_url_links(Some(&links));
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(
+            mapped[0].id,
+            "https://bitbucket.org/workspace/repo/pull-requests/1"
+        );
+        assert!(mapped.iter().all(|l| l.kind.as_deref() == Some("url")));
+        assert!(mapped.iter().all(|l| l.relation == "references"));
+    }
+
+    #[test]
+    fn drops_api_only_links() {
+        let links = serde_json::json!({
+            "diff": {"href": "https://api.bitbucket.org/2.0/.../diff"},
+            "comments": {"href": "https://api.bitbucket.org/2.0/.../comments"}
+        });
+        let mapped = map_url_links(Some(&links));
+        assert!(mapped.is_empty());
     }
 }

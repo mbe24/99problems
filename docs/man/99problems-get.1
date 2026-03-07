@@ -4,7 +4,7 @@
 .SH NAME
 99problems\-get \- Fetch issue and pull request conversations
 .SH SYNOPSIS
-\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-\-deployment\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-output\-mode\fR] [\fB\-\-stream\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-account\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fB99problems get\fR [\fB\-q\fR|\fB\-\-query\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-Q\fR|\fB\-\-quiet\fR] [\fB\-r\fR|\fB\-\-repo\fR] [\fB\-\-error\-format\fR] [\fB\-s\fR|\fB\-\-state\fR] [\fB\-l\fR|\fB\-\-labels\fR] [\fB\-a\fR|\fB\-\-author\fR] [\fB\-S\fR|\fB\-\-since\fR] [\fB\-m\fR|\fB\-\-milestone\fR] [\fB\-i\fR|\fB\-\-id\fR] [\fB\-p\fR|\fB\-\-platform\fR] [\fB\-I\fR|\fB\-\-instance\fR] [\fB\-u\fR|\fB\-\-url\fR] [\fB\-\-deployment\fR] [\fB\-t\fR|\fB\-\-type\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-output\-mode\fR] [\fB\-\-stream\fR] [\fB\-R\fR|\fB\-\-include\-review\-comments\fR] [\fB\-\-no\-comments\fR] [\fB\-\-no\-links\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-k\fR|\fB\-\-token\fR] [\fB\-\-account\-email\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Fetch issue and pull request conversations
 .SH OPTIONS
@@ -95,6 +95,9 @@ Include pull request review comments (inline code comments)
 .TP
 \fB\-\-no\-comments\fR
 Skip fetching comments (faster, smaller output)
+.TP
+\fB\-\-no\-links\fR
+Skip fetching related links metadata (faster, smaller output)
 .TP
 \fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
 Write output to a file (default: stdout)
