@@ -49,7 +49,7 @@ git diff -- docs/man
 
 ## Agent Skill Scaffold
 
-The canonical skill lives under `.agents/skills/99problems/`.
+The canonical editable skill template lives under `templates/skills/99problems/`.
 
 If you change `skill init` template output, re-run:
 
