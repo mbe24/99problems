@@ -178,10 +178,19 @@ fn validate_skill_markdown(contents: &str) -> Result<()> {
 }
 
 fn split_frontmatter(contents: &str) -> Option<(&str, &str)> {
-    let raw = contents.strip_prefix("---\n")?;
-    let end = raw.find("\n---\n")?;
+    let raw = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))?;
+
+    let (end, separator_len) = if let Some(idx) = raw.find("\n---\n") {
+        (idx, "\n---\n".len())
+    } else {
+        let idx = raw.find("\r\n---\r\n")?;
+        (idx, "\r\n---\r\n".len())
+    };
+
     let frontmatter = &raw[..end];
-    let body = &raw[end + 5..];
+    let body = &raw[end + separator_len..];
     Some((frontmatter, body))
 }
 
