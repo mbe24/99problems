@@ -7,6 +7,10 @@ const { execSync } = require("child_process");
 
 const version = process.env.VERSION?.replace(/^v/, "");
 if (!version) throw new Error("VERSION env var is required (e.g. v0.1.0)");
+const funding = [
+  "https://github.com/sponsors/mbe24",
+  "https://ko-fi.com/mbe24",
+];
 
 const platforms = [
   {
@@ -71,6 +75,7 @@ for (const p of platforms) {
     main: `bin/${p.binary}`,
     license: "Apache-2.0",
     repository: { type: "git", url: "https://github.com/mbe24/99problems" },
+    funding,
   };
   fs.writeFileSync(
     path.join(pkgDir, "package.json"),
@@ -84,6 +89,7 @@ for (const p of platforms) {
 // Update main package.json version + optionalDependencies versions
 const mainPkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 mainPkg.version = version;
+mainPkg.funding = funding;
 for (const p of platforms) {
   mainPkg.optionalDependencies[p.pkg] = version;
 }

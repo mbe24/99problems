@@ -178,6 +178,10 @@ Use user scope by overriding path:
 99problems skill init --path ~/.agents/skills
 ```
 
+## Support this project
+
+If 99problems saves you time, you can support ongoing maintenance via [GitHub Sponsors](https://github.com/sponsors/mbe24) or [Ko-fi](https://ko-fi.com/mbe24).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
