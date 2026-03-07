@@ -1,7 +1,6 @@
 # 99problems
 
 [![CI](https://github.com/mbe24/99problems/actions/workflows/ci.yml/badge.svg)](https://github.com/mbe24/99problems/actions/workflows/ci.yml)
-[![Man Drift](https://github.com/mbe24/99problems/actions/workflows/man-drift.yml/badge.svg)](https://github.com/mbe24/99problems/actions/workflows/man-drift.yml)
 [![npm](https://img.shields.io/npm/v/@mbe24/99problems?color=7C3AED&label=npm)](https://www.npmjs.com/package/@mbe24/99problems)
 [![crates.io](https://img.shields.io/crates/v/problems99?color=7C3AED&label=crates.io)](https://crates.io/crates/problems99)
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
@@ -124,9 +123,6 @@ Generate all pages to disk:
 ```bash
 99problems man --output docs/man --section 1
 ```
-
-Committed man pages live in `docs/man/`.
-The `Man Drift` workflow verifies generated output stays in sync with committed files.
 
 ## Output Modes
 
