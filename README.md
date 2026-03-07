@@ -40,12 +40,16 @@ cargo install problems99
 
 # Stream as JSON Lines for pipelines
 99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
+
+# Scaffold the canonical Agent Skill
+99problems skill init
 ```
 
 ## Commands
 
 ```text
 99problems get [OPTIONS]               Fetch issue and pull request conversations
+99problems skill init [OPTIONS]        Scaffold the canonical Agent Skill
 99problems config <SUBCOMMAND>         Inspect and edit .99problems configuration
 99problems completions <SHELL>         Generate shell completion scripts
 99problems man [OPTIONS]               Generate man pages (stdout or files)
@@ -150,6 +154,20 @@ Use `--output-mode batch` when you want all-or-nothing output at the end.
 99problems completions bash
 99problems completions zsh
 99problems completions powershell
+```
+
+## Agent Skill Scaffold
+
+Generate/update the canonical interoperable skill at `.agents/skills/99problems`:
+
+```bash
+99problems skill init
+```
+
+Use user scope by overriding path:
+
+```bash
+99problems skill init --path ~/.agents/skills
 ```
 
 ## Contributing

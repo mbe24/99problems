@@ -47,6 +47,16 @@ Verify no drift:
 git diff -- docs/man
 ```
 
+## Agent Skill Scaffold
+
+The canonical skill lives under `.agents/skills/99problems/`.
+
+If you change `skill init` template output, re-run:
+
+```bash
+cargo run -- skill init --force
+```
+
 ## Command Module Layout
 
 Hybrid command-module convention:
