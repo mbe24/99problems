@@ -11,7 +11,7 @@ mod model;
 mod query;
 
 use crate::model::ConversationMetadata;
-use model::{JiraSearchResponse, extract_adf_text, map_issue_links};
+use model::{JiraSearchResponse, extract_adf_text};
 use query::{build_jql, parse_jira_query};
 
 pub(super) const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
@@ -71,7 +71,7 @@ impl JiraSource {
                 ("maxResults".into(), per_page.to_string()),
                 (
                     "fields".into(),
-                    "summary,description,status,issuelinks".into(),
+                    "summary,description,status,parent,subtasks,issuelinks,attachment".into(),
                 ),
             ];
             if let Some(token) = &next_page_token {
@@ -102,7 +102,7 @@ impl JiraSource {
                     vec![]
                 };
                 let metadata = if req.include_links {
-                    ConversationMetadata::with_links(map_issue_links(fields.issuelinks))
+                    self.fetch_metadata(&issue.key, fields.clone(), req)
                 } else {
                     ConversationMetadata::empty()
                 };

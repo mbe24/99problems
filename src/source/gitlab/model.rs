@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::model::{Comment, ConversationLink};
 
@@ -8,6 +9,7 @@ pub(super) struct GitLabIssueItem {
     pub(super) title: String,
     pub(super) state: String,
     pub(super) description: Option<String>,
+    pub(super) web_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -16,6 +18,7 @@ pub(super) struct GitLabMergeRequestItem {
     pub(super) title: String,
     pub(super) state: String,
     pub(super) description: Option<String>,
+    pub(super) web_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,14 +64,22 @@ pub(super) struct GitLabIssueLinkItem {
     pub(super) target_issue: Option<GitLabLinkIssueRef>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct GitLabLinkIssueRef {
     pub(super) iid: u64,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Deserialize)]
+pub(super) struct GitLabRelatedIssueRef {
+    pub(super) iid: Option<u64>,
+    pub(super) id: Option<Value>,
+    pub(super) web_url: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
 pub(super) struct GitLabMergeRequestRef {
     pub(super) iid: u64,
+    pub(super) web_url: Option<String>,
 }
 
 pub(super) struct ConversationSeed {
@@ -77,6 +88,7 @@ pub(super) struct ConversationSeed {
     pub(super) state: String,
     pub(super) body: Option<String>,
     pub(super) is_pr: bool,
+    pub(super) web_url: Option<String>,
 }
 
 pub(super) fn map_note_comment(note: GitLabNote) -> Comment {
@@ -146,7 +158,7 @@ pub(super) fn map_issue_link(
     }
 }
 
-pub(super) fn map_closed_by_link(mr: GitLabMergeRequestRef) -> ConversationLink {
+pub(super) fn map_closed_by_link(mr: &GitLabMergeRequestRef) -> ConversationLink {
     ConversationLink {
         id: mr.iid.to_string(),
         relation: "closed_by".to_string(),
@@ -154,11 +166,37 @@ pub(super) fn map_closed_by_link(mr: GitLabMergeRequestRef) -> ConversationLink 
     }
 }
 
-pub(super) fn map_closes_issue_link(issue: GitLabLinkIssueRef) -> ConversationLink {
-    ConversationLink {
-        id: issue.iid.to_string(),
+pub(super) fn map_closes_related_issue_link(
+    issue: &GitLabRelatedIssueRef,
+) -> Option<ConversationLink> {
+    Some(ConversationLink {
+        id: issue_link_id(issue)?,
         relation: "closes".to_string(),
         kind: Some("issue".to_string()),
+    })
+}
+
+pub(super) fn map_related_issue_link(issue: &GitLabRelatedIssueRef) -> Option<ConversationLink> {
+    Some(ConversationLink {
+        id: issue_link_id(issue)?,
+        relation: "relates".to_string(),
+        kind: Some("issue".to_string()),
+    })
+}
+
+pub(super) fn map_related_mr_link(mr: &GitLabMergeRequestRef) -> ConversationLink {
+    ConversationLink {
+        id: mr.iid.to_string(),
+        relation: "relates".to_string(),
+        kind: Some("pr".to_string()),
+    }
+}
+
+pub(super) fn map_url_reference(url: &str) -> ConversationLink {
+    ConversationLink {
+        id: url.to_string(),
+        relation: "references".to_string(),
+        kind: Some("url".to_string()),
     }
 }
 
@@ -176,6 +214,17 @@ fn invert_relation(relation: &str) -> &'static str {
         "blocked_by" => "blocks",
         _ => "relates",
     }
+}
+
+fn issue_link_id(issue: &GitLabRelatedIssueRef) -> Option<String> {
+    if let Some(iid) = issue.iid {
+        return Some(iid.to_string());
+    }
+    let id = issue.id.as_ref()?;
+    id.as_str()
+        .map(str::to_string)
+        .or_else(|| id.as_u64().map(|value| value.to_string()))
+        .or_else(|| id.as_i64().map(|value| value.to_string()))
 }
 
 #[cfg(test)]
@@ -211,5 +260,30 @@ mod tests {
         .expect("expected mapped link");
         assert_eq!(link.id, "22");
         assert_eq!(link.relation, "blocked_by");
+    }
+
+    #[test]
+    fn map_related_issue_link_uses_external_string_id() {
+        let issue = GitLabRelatedIssueRef {
+            iid: None,
+            id: Some(serde_json::json!("CPQ-20376")),
+            web_url: None,
+        };
+        let link = map_related_issue_link(&issue).expect("expected related link");
+        assert_eq!(link.id, "CPQ-20376");
+        assert_eq!(link.relation, "relates");
+        assert_eq!(link.kind.as_deref(), Some("issue"));
+    }
+
+    #[test]
+    fn map_closes_related_issue_link_prefers_iid() {
+        let issue = GitLabRelatedIssueRef {
+            iid: Some(42),
+            id: Some(serde_json::json!("CPQ-20376")),
+            web_url: None,
+        };
+        let link = map_closes_related_issue_link(&issue).expect("expected closes link");
+        assert_eq!(link.id, "42");
+        assert_eq!(link.relation, "closes");
     }
 }

@@ -1,7 +1,8 @@
 use anyhow::Result;
 
 use self::model::{
-    BitbucketCommentItem, BitbucketPullRequestItem, map_pr_comment, matches_pr_filters,
+    BitbucketCommentItem, BitbucketPullRequestItem, map_pr_comment, map_url_links,
+    matches_pr_filters,
 };
 use super::BitbucketSource;
 use super::query::{BitbucketFilters, parse_bitbucket_query, parse_workspace_repo};
@@ -143,7 +144,11 @@ impl BitbucketSource {
             state: item.state,
             body,
             comments,
-            metadata: ConversationMetadata::empty(),
+            metadata: if req.include_links {
+                ConversationMetadata::with_links(map_url_links(item.links.as_ref()))
+            } else {
+                ConversationMetadata::empty()
+            },
         })
     }
 

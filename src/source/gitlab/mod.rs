@@ -78,6 +78,7 @@ impl GitLabSource {
                                 state: i.state,
                                 body: i.description,
                                 is_pr: false,
+                                web_url: i.web_url,
                             },
                             req,
                         )?;
@@ -104,6 +105,7 @@ impl GitLabSource {
                                 state: mr.state,
                                 body: mr.description,
                                 is_pr: true,
+                                web_url: mr.web_url,
                             },
                             req,
                         )?;
@@ -140,6 +142,7 @@ impl GitLabSource {
                             state: issue.state,
                             body: issue.description,
                             is_pr: false,
+                            web_url: issue.web_url,
                         },
                         req,
                     )?;
@@ -161,6 +164,7 @@ impl GitLabSource {
                             state: mr.state,
                             body: mr.description,
                             is_pr: true,
+                            web_url: mr.web_url,
                         },
                         req,
                     )?;
@@ -180,6 +184,7 @@ impl GitLabSource {
                             state: mr.state,
                             body: mr.description,
                             is_pr: true,
+                            web_url: mr.web_url,
                         },
                         req,
                     )?;
