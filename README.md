@@ -121,6 +121,21 @@ For Bitbucket Cloud, use an app-password, repository access token, or workspace-
 
 Selection order: `--instance` -> single configured instance -> `default_instance`.
 
+Telemetry (testing-first, config-activated):
+
+```toml
+[telemetry]
+enabled = true
+otlp_endpoint = "http://localhost:4318/v1/traces"
+```
+
+Telemetry is best-effort and traces `99problems get` without changing normal command behavior or exit codes.
+
+Build-time feature:
+- `telemetry-otel` controls whether OTEL support is compiled in.
+- Default builds include it.
+- Use `--no-default-features` for telemetry-free release binaries.
+
 ## Man Pages
 
 Generate and print root man page:

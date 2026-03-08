@@ -1,6 +1,6 @@
 use anyhow::Result;
 use reqwest::blocking::Client;
-use tracing::{debug, trace};
+use tracing::{debug, debug_span, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::AppError;
@@ -11,7 +11,7 @@ mod model;
 mod query;
 
 use crate::model::ConversationMetadata;
-use model::{JiraSearchResponse, extract_adf_text};
+use model::{JiraIssueItem, JiraSearchResponse, extract_adf_text};
 use query::{build_jql, parse_jira_query};
 
 pub(super) const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
@@ -59,65 +59,11 @@ impl JiraSource {
         let mut emitted = 0usize;
 
         loop {
-            let url = format!("{}/rest/api/3/search/jql", self.base_url);
-            debug!(
-                start_at,
-                per_page,
-                has_next_page_token = next_page_token.is_some(),
-                "fetching Jira search page"
-            );
-            let mut query_params: Vec<(String, String)> = vec![
-                ("jql".into(), jql.clone()),
-                ("maxResults".into(), per_page.to_string()),
-                (
-                    "fields".into(),
-                    "summary,description,status,parent,subtasks,issuelinks,attachment".into(),
-                ),
-            ];
-            if let Some(token) = &next_page_token {
-                query_params.push(("nextPageToken".into(), token.clone()));
-            } else {
-                query_params.push(("startAt".into(), start_at.to_string()));
-            }
-
-            let http = Self::apply_auth(
-                self.client.get(&url),
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-            )
-            .query(&query_params);
-            let resp = Self::send(http, "search")?;
-            let page: JiraSearchResponse = Self::parse_jira_json(
-                resp,
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-                "search",
-            )?;
+            let page =
+                self.fetch_search_page(req, &jql, per_page, start_at, next_page_token.as_deref())?;
             trace!(count = page.issues.len(), "decoded Jira search page");
             for issue in page.issues {
-                let fields = issue.fields;
-                let comments = if req.include_comments {
-                    self.fetch_comments(&issue.key, req)?
-                } else {
-                    vec![]
-                };
-                let metadata = if req.include_links {
-                    self.fetch_metadata(&issue.key, fields.clone(), req)
-                } else {
-                    ConversationMetadata::empty()
-                };
-                emit(Conversation {
-                    id: issue.key,
-                    title: fields.summary,
-                    state: fields.status.name,
-                    body: fields
-                        .description
-                        .as_ref()
-                        .map(extract_adf_text)
-                        .filter(|s| !s.is_empty()),
-                    comments,
-                    metadata,
-                })?;
+                emit(self.build_search_conversation(req, issue)?)?;
                 emitted += 1;
             }
 
@@ -146,6 +92,102 @@ impl JiraSource {
 
         Ok(emitted)
     }
+
+    fn fetch_search_page(
+        &self,
+        req: &FetchRequest,
+        jql: &str,
+        per_page: u32,
+        start_at: u32,
+        next_page_token: Option<&str>,
+    ) -> Result<JiraSearchResponse> {
+        let _page_span = debug_span!(
+            "jira.search.page",
+            start_at,
+            per_page,
+            has_next_page_token = next_page_token.is_some()
+        )
+        .entered();
+        let url = format!("{}/rest/api/3/search/jql", self.base_url);
+        debug!(
+            start_at,
+            per_page,
+            has_next_page_token = next_page_token.is_some(),
+            "fetching Jira search page"
+        );
+
+        let query_params = search_query_params(jql, per_page, start_at, next_page_token);
+        let http = Self::apply_auth(
+            self.client.get(&url),
+            req.token.as_deref(),
+            req.account_email.as_deref(),
+        )
+        .query(&query_params);
+        let resp = Self::send(http, "search")?;
+
+        let _decode_span = debug_span!("jira.search.decode", operation = "search").entered();
+        Self::parse_jira_json(
+            resp,
+            req.token.as_deref(),
+            req.account_email.as_deref(),
+            "search",
+        )
+    }
+
+    fn build_search_conversation(
+        &self,
+        req: &FetchRequest,
+        issue: JiraIssueItem,
+    ) -> Result<Conversation> {
+        let fields = issue.fields;
+        let comments = if req.include_comments {
+            let _comments_span = debug_span!("jira.search.hydrate.comments").entered();
+            self.fetch_comments(&issue.key, req)?
+        } else {
+            vec![]
+        };
+        let metadata = if req.include_links {
+            let _links_span = debug_span!("jira.search.hydrate.links").entered();
+            self.fetch_metadata(&issue.key, fields.clone(), req)
+        } else {
+            ConversationMetadata::empty()
+        };
+
+        Ok(Conversation {
+            id: issue.key,
+            title: fields.summary,
+            state: fields.status.name,
+            body: fields
+                .description
+                .as_ref()
+                .map(extract_adf_text)
+                .filter(|s| !s.is_empty()),
+            comments,
+            metadata,
+        })
+    }
+}
+
+fn search_query_params(
+    jql: &str,
+    per_page: u32,
+    start_at: u32,
+    next_page_token: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut query_params = vec![
+        ("jql".to_string(), jql.to_string()),
+        ("maxResults".to_string(), per_page.to_string()),
+        (
+            "fields".to_string(),
+            "summary,description,status,parent,subtasks,issuelinks,attachment".to_string(),
+        ),
+    ];
+    if let Some(token) = next_page_token {
+        query_params.push(("nextPageToken".to_string(), token.to_string()));
+    } else {
+        query_params.push(("startAt".to_string(), start_at.to_string()));
+    }
+    query_params
 }
 
 impl Source for JiraSource {

@@ -1,10 +1,12 @@
 use anyhow::Result;
 use clap::{Args, ValueEnum};
 use std::io::{IsTerminal, Write};
-use tracing::{debug, info, warn};
+use tracing::{Span, debug, info, info_span, warn};
+#[cfg(feature = "telemetry-otel")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::config::{Config, ResolveOptions, token_env_var};
-use crate::error::AppError;
+use crate::error::{AppError, classify_anyhow_error};
 use crate::format::{
     StreamFormatter, json::JsonStreamFormatter, jsonl::JsonLinesFormatter, text::TextFormatter,
     yaml::YamlStreamFormatter,
@@ -97,6 +99,32 @@ enum ResolvedOutputFormat {
 struct OutputPlan {
     mode: ResolvedOutputMode,
     format: ResolvedOutputFormat,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutputStats {
+    fetched: usize,
+    emitted: usize,
+}
+
+impl ResolvedOutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Batch => "batch",
+            Self::Stream => "stream",
+        }
+    }
+}
+
+impl ResolvedOutputFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Jsonl => "jsonl",
+            Self::Text => "text",
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -203,12 +231,59 @@ pub(crate) struct GetArgs {
 /// Returns an error if config resolution, request building, remote fetching,
 /// or output writing fails.
 pub(crate) fn run(args: &GetArgs) -> Result<()> {
-    let cfg = load_config_for_get(args)?;
-    emit_get_warnings(&cfg, args)?;
+    let root_span = info_span!("cli.command.get");
+    set_cli_semconv_attributes(&root_span);
+    let _guard = root_span.enter();
 
-    let source = build_source_for_platform(&cfg)?;
-    let req = build_fetch_request(&cfg, args)?;
+    let result = run_get_pipeline(args, &root_span);
+    match result {
+        Ok((stats, _output_plan)) => {
+            span_attr_i64(&root_span, "process.exit.code", 0_i64);
+            span_attr_i64(
+                &root_span,
+                "99problems.fetch.count",
+                i64::try_from(stats.fetched).unwrap_or(i64::MAX),
+            );
+            span_attr_i64(
+                &root_span,
+                "99problems.emit.count",
+                i64::try_from(stats.emitted).unwrap_or(i64::MAX),
+            );
+            Ok(())
+        }
+        Err(err) => {
+            let app_err = classify_anyhow_error(&err);
+            span_attr_i64(
+                &root_span,
+                "process.exit.code",
+                i64::from(app_err.exit_code()),
+            );
+            span_attr_str(&root_span, "error.type", app_err.category().code());
+            Err(err)
+        }
+    }
+}
+
+fn run_get_pipeline(args: &GetArgs, root_span: &Span) -> Result<(OutputStats, OutputPlan)> {
+    let cfg = {
+        let _span = info_span!("get.resolve_config").entered();
+        load_config_for_get(args)?
+    };
+    {
+        let _span = info_span!("get.emit_warnings").entered();
+        emit_get_warnings(&cfg, args)?;
+    }
+
+    let source = {
+        let _span = info_span!("get.build_source", platform = %cfg.platform).entered();
+        build_source_for_platform(&cfg)?
+    };
+    let req = {
+        let _span = info_span!("get.build_request").entered();
+        build_fetch_request(&cfg, args)?
+    };
     let output_plan = resolve_output_plan(args);
+    set_get_context_attributes(root_span, &cfg, output_plan);
     debug!(
         platform = %cfg.platform,
         kind = %cfg.kind,
@@ -220,19 +295,113 @@ pub(crate) fn run(args: &GetArgs) -> Result<()> {
         "resolved get configuration"
     );
 
-    match output_plan.mode {
+    let stats = match output_plan.mode {
         ResolvedOutputMode::Batch => write_batch_output(
             source.as_ref(),
             &req,
             output_plan.format,
             args.output.as_deref(),
-        ),
+        )?,
         ResolvedOutputMode::Stream => write_stream_output(
             source.as_ref(),
             &req,
             output_plan.format,
             args.output.as_deref(),
-        ),
+        )?,
+    };
+
+    Ok((stats, output_plan))
+}
+
+fn set_get_context_attributes(root_span: &Span, cfg: &Config, output_plan: OutputPlan) {
+    span_attr_str(root_span, "99problems.platform", &cfg.platform);
+    span_attr_str(
+        root_span,
+        "99problems.platform.host",
+        &resolve_platform_host(cfg),
+    );
+    if cfg.platform == "bitbucket"
+        && let Some(deployment) = trace_deployment_for_platform(cfg)
+    {
+        span_attr_str(root_span, "99problems.platform.deployment", deployment);
+    }
+    span_attr_str(root_span, "99problems.content.kind", effective_kind(cfg));
+    span_attr_str(
+        root_span,
+        "99problems.output.mode",
+        output_plan.mode.as_str(),
+    );
+    span_attr_str(
+        root_span,
+        "99problems.output.format",
+        output_plan.format.as_str(),
+    );
+}
+
+fn trace_deployment_for_platform(cfg: &Config) -> Option<&'static str> {
+    if cfg.platform != "bitbucket" {
+        return None;
+    }
+    match cfg.deployment.as_deref() {
+        Some("cloud") => Some("cloud"),
+        Some("selfhosted") => Some("dc"),
+        _ => None,
+    }
+}
+
+fn resolve_platform_host(cfg: &Config) -> String {
+    if let Some(url) = cfg.platform_url.as_deref() {
+        if let Some(host) = extract_host(url) {
+            return host;
+        }
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    default_platform_host(&cfg.platform).to_string()
+}
+
+fn extract_host(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    parse_host_component(trimmed).or_else(|| {
+        if trimmed.contains("://") {
+            None
+        } else {
+            parse_host_component(&format!("https://{trimmed}"))
+        }
+    })
+}
+
+fn parse_host_component(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    match parsed.port() {
+        Some(port) if !is_default_port(parsed.scheme(), port) => Some(format!("{host}:{port}")),
+        _ => Some(host.to_string()),
+    }
+}
+
+fn is_default_port(scheme: &str, port: u16) -> bool {
+    match scheme {
+        "http" => port == 80,
+        "https" => port == 443,
+        _ => false,
+    }
+}
+
+fn default_platform_host(platform: &str) -> &'static str {
+    match platform {
+        "github" => "api.github.com",
+        "gitlab" => "gitlab.com",
+        "jira" => "jira.atlassian.com",
+        "bitbucket" => "api.bitbucket.org",
+        _ => "unknown",
     }
 }
 
@@ -317,11 +486,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     let repo = cfg.repo.clone();
     let state = cfg.state.clone();
     let is_bitbucket = cfg.platform == "bitbucket";
-    let effective_kind = if is_bitbucket && cfg.kind == "issue" && !cfg.kind_explicit {
-        "pr"
-    } else {
-        cfg.kind.as_str()
-    };
+    let effective_kind = effective_kind(cfg);
 
     if let Some(id) = &args.id {
         let ignored_flags = ignored_flags_in_id_mode(args);
@@ -394,6 +559,14 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
         include_review_comments: args.include_review_comments,
         include_links: !args.no_links,
     })
+}
+
+fn effective_kind(cfg: &Config) -> &str {
+    if cfg.platform == "bitbucket" && cfg.kind == "issue" && !cfg.kind_explicit {
+        "pr"
+    } else {
+        cfg.kind.as_str()
+    }
 }
 
 fn ignored_flags_in_id_mode(args: &GetArgs) -> Vec<&'static str> {
@@ -469,15 +642,21 @@ fn write_batch_output(
     req: &FetchRequest,
     format: ResolvedOutputFormat,
     output_path: Option<&str>,
-) -> Result<()> {
-    let conversations = source.fetch(req)?;
+) -> Result<OutputStats> {
+    let conversations = {
+        let _span = info_span!("get.fetch.batch").entered();
+        source.fetch(req)?
+    };
     let mut formatter = build_formatter(format);
     let mut rendered = Vec::new();
-    formatter.begin(&mut rendered)?;
-    for conversation in &conversations {
-        formatter.write_item(&mut rendered, conversation)?;
+    {
+        let _span = info_span!("get.format.batch").entered();
+        formatter.begin(&mut rendered)?;
+        for conversation in &conversations {
+            formatter.write_item(&mut rendered, conversation)?;
+        }
+        formatter.finish(&mut rendered)?;
     }
-    formatter.finish(&mut rendered)?;
 
     if let Some(path) = output_path {
         let mut file = std::fs::File::create(path)?;
@@ -490,7 +669,10 @@ fn write_batch_output(
         info!(count = conversations.len(), "wrote conversations to stdout");
     }
 
-    Ok(())
+    Ok(OutputStats {
+        fetched: conversations.len(),
+        emitted: conversations.len(),
+    })
 }
 
 fn write_stream_output(
@@ -498,7 +680,7 @@ fn write_stream_output(
     req: &FetchRequest,
     format: ResolvedOutputFormat,
     output_path: Option<&str>,
-) -> Result<()> {
+) -> Result<OutputStats> {
     let mut formatter = build_formatter(format);
     let mut writer: Box<dyn Write> = match output_path {
         Some(path) => Box::new(std::fs::File::create(path)?),
@@ -507,17 +689,23 @@ fn write_stream_output(
     formatter.begin(&mut writer)?;
 
     let mut emitted = 0usize;
-    let fetch_result = source.fetch_stream(req, &mut |conversation| {
-        formatter.write_item(&mut writer, &conversation)?;
-        emitted += 1;
-        Ok(())
-    });
-    if let Err(err) = fetch_result {
-        return Err(AppError::provider(format!(
-            "Fetch failed after writing {emitted} conversations: {err}"
-        ))
-        .into());
-    }
+    let fetched = {
+        let _span = info_span!("get.fetch.stream").entered();
+        source.fetch_stream(req, &mut |conversation| {
+            formatter.write_item(&mut writer, &conversation)?;
+            emitted += 1;
+            Ok(())
+        })
+    };
+    let fetched = match fetched {
+        Ok(value) => value,
+        Err(err) => {
+            return Err(AppError::provider(format!(
+                "Fetch failed after writing {emitted} conversations: {err}"
+            ))
+            .into());
+        }
+    };
 
     formatter.finish(&mut writer)?;
     writer.flush()?;
@@ -526,8 +714,40 @@ fn write_stream_output(
     } else {
         info!(count = emitted, "stream-wrote conversations to stdout");
     }
-    Ok(())
+    Ok(OutputStats { fetched, emitted })
 }
+
+fn set_cli_semconv_attributes(span: &Span) {
+    span_attr_str(span, "cli.command.name", "get");
+    span_attr_i64(span, "process.pid", i64::from(std::process::id()));
+
+    if let Ok(path) = std::env::current_exe() {
+        if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+            span_attr_str(span, "process.executable.name", name);
+        }
+        span_attr_str(
+            span,
+            "process.executable.path",
+            path.to_string_lossy().as_ref(),
+        );
+    }
+}
+
+#[cfg(feature = "telemetry-otel")]
+fn span_attr_str(span: &Span, key: &'static str, value: &str) {
+    span.set_attribute(key, value.to_string());
+}
+
+#[cfg(not(feature = "telemetry-otel"))]
+fn span_attr_str(_span: &Span, _key: &'static str, _value: &str) {}
+
+#[cfg(feature = "telemetry-otel")]
+fn span_attr_i64(span: &Span, key: &'static str, value: i64) {
+    span.set_attribute(key, value);
+}
+
+#[cfg(not(feature = "telemetry-otel"))]
+fn span_attr_i64(_span: &Span, _key: &'static str, _value: i64) {}
 
 fn looks_like_atlassian_api_token(token: &str) -> bool {
     token.starts_with("AT") && !token.contains(':') && !token.contains('.')
@@ -578,6 +798,21 @@ mod tests {
             deployment: Some(deployment.into()),
             per_page: 100,
             platform_url: Some("https://bitbucket.example.com".into()),
+        }
+    }
+
+    fn config_with_platform(platform: &str, platform_url: Option<&str>) -> Config {
+        Config {
+            platform: platform.to_string(),
+            kind: "issue".to_string(),
+            kind_explicit: false,
+            token: None,
+            account_email: None,
+            repo: None,
+            state: None,
+            deployment: None,
+            per_page: 100,
+            platform_url: platform_url.map(std::borrow::ToOwned::to_owned),
         }
     }
 
@@ -673,5 +908,43 @@ mod tests {
         args.no_links = true;
         let req = build_fetch_request(&cfg, &args).unwrap();
         assert!(!req.include_links);
+    }
+
+    #[test]
+    fn extract_host_uses_hostname_without_default_port() {
+        assert_eq!(
+            extract_host("https://tacton-rnd.atlassian.net").as_deref(),
+            Some("tacton-rnd.atlassian.net")
+        );
+        assert_eq!(
+            extract_host("https://tacton-rnd.atlassian.net:443").as_deref(),
+            Some("tacton-rnd.atlassian.net")
+        );
+    }
+
+    #[test]
+    fn extract_host_keeps_non_standard_port() {
+        assert_eq!(
+            extract_host("http://localhost:7990/users/ssc/repos/scc-app").as_deref(),
+            Some("localhost:7990")
+        );
+    }
+
+    #[test]
+    fn resolve_platform_host_uses_platform_default_when_url_missing() {
+        let cfg = config_with_platform("jira", None);
+        assert_eq!(resolve_platform_host(&cfg), "jira.atlassian.com");
+    }
+
+    #[test]
+    fn resolve_platform_host_falls_back_to_trimmed_raw_value() {
+        let cfg = config_with_platform("gitlab", Some(" not a valid URL "));
+        assert_eq!(resolve_platform_host(&cfg), "not a valid URL");
+    }
+
+    #[test]
+    fn trace_deployment_maps_selfhosted_to_dc() {
+        let cfg = bitbucket_config("selfhosted", "pr", true);
+        assert_eq!(trace_deployment_for_platform(&cfg), Some("dc"));
     }
 }

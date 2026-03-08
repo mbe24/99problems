@@ -2,10 +2,12 @@ use anyhow::Result;
 use reqwest::StatusCode;
 use reqwest::blocking::{RequestBuilder, Response};
 use serde::de::DeserializeOwned;
+use tracing::debug_span;
 
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 
 pub(in crate::source::bitbucket) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
+    let _span = debug_span!("bitbucket.http.send", operation = operation).entered();
     req.send()
         .map_err(|err| app_error_from_reqwest("Bitbucket", operation, &err).into())
 }
@@ -15,6 +17,7 @@ pub(in crate::source::bitbucket) fn parse_bitbucket_json<T: DeserializeOwned>(
     token: Option<&str>,
     operation: &str,
 ) -> Result<T> {
+    let _span = debug_span!("bitbucket.http.decode", operation = operation).entered();
     let status = resp.status();
     let body = resp.text()?;
     if !status.is_success() {

@@ -104,7 +104,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Build binary
-        run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
+        run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --no-default-features --target ${{ matrix.target }}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7

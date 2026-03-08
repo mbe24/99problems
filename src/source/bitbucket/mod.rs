@@ -1,5 +1,6 @@
 use anyhow::Result;
 use reqwest::blocking::Client;
+use tracing::debug_span;
 
 use super::{FetchRequest, Source};
 use crate::error::AppError;
@@ -82,6 +83,7 @@ impl Source for BitbucketSource {
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
+        let _span = debug_span!("bitbucket.fetch_stream").entered();
         match self.deployment {
             BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
             BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit),

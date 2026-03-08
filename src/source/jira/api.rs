@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::{RequestBuilder, Response};
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
-use tracing::{debug, trace, warn};
+use tracing::{debug, debug_span, trace, warn};
 
 use super::model::{
     JiraCommentsPage, JiraIssueFields, JiraIssueItem, JiraKeySearchResponse, JiraRemoteLinkItem,
@@ -40,11 +40,13 @@ impl JiraSource {
     }
 
     pub(super) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
+        let _span = debug_span!("jira.http.send", operation = operation).entered();
         req.send()
             .map_err(|err| app_error_from_reqwest("Jira", operation, &err).into())
     }
 
     pub(super) fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
+        let _span = debug_span!("jira.hydrate.issue").entered();
         let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
         let http = Self::apply_auth(
@@ -75,12 +77,16 @@ impl JiraSource {
             .with_http_status(StatusCode::NOT_FOUND)
             .into());
         }
-        let issue: JiraIssueItem = Self::parse_jira_json(
-            resp,
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-            "issue fetch",
-        )?;
+        let issue: JiraIssueItem = {
+            let _decode_span =
+                debug_span!("jira.issue.decode", operation = "issue fetch").entered();
+            Self::parse_jira_json(
+                resp,
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+                "issue fetch",
+            )?
+        };
         let fields = issue.fields;
         let comments = if req.include_comments {
             self.fetch_comments(&issue.key, req)?
@@ -112,6 +118,7 @@ impl JiraSource {
         fields: JiraIssueFields,
         req: &FetchRequest,
     ) -> ConversationMetadata {
+        let _span = debug_span!("jira.hydrate.links").entered();
         let mut links = map_parent_child_links(&fields);
         links.extend(map_issue_links(fields.issuelinks));
         links.extend(map_attachment_links(fields.attachment));
@@ -143,6 +150,7 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<crate::model::ConversationLink>> {
+        let _span = debug_span!("jira.links.remote").entered();
         let url = format!("{}/rest/api/3/issue/{issue_key}/remotelink", self.base_url);
         let http = Self::apply_auth(
             self.client.get(&url),
@@ -150,12 +158,16 @@ impl JiraSource {
             req.account_email.as_deref(),
         );
         let resp = Self::send(http, "remote link fetch")?;
-        let items: Vec<JiraRemoteLinkItem> = Self::parse_jira_json(
-            resp,
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-            "remote link fetch",
-        )?;
+        let items: Vec<JiraRemoteLinkItem> = {
+            let _decode_span =
+                debug_span!("jira.links.remote.decode", operation = "remote link fetch").entered();
+            Self::parse_jira_json(
+                resp,
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+                "remote link fetch",
+            )?
+        };
         Ok(map_remote_links(items))
     }
 
@@ -164,6 +176,7 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<crate::model::ConversationLink>> {
+        let _span = debug_span!("jira.links.child_search").entered();
         let per_page = Self::bounded_per_page(req.per_page);
         let mut start_at = 0u32;
         let mut next_page_token: Option<String> = None;
@@ -171,6 +184,8 @@ impl JiraSource {
         let jql = format!("parent = {issue_key}");
 
         loop {
+            let _page_span =
+                debug_span!("jira.links.child_search.page", start_at, per_page).entered();
             let url = format!("{}/rest/api/3/search/jql", self.base_url);
             let mut query_params: Vec<(String, String)> = vec![
                 ("jql".into(), jql.clone()),
@@ -190,12 +205,19 @@ impl JiraSource {
             )
             .query(&query_params);
             let resp = Self::send(http, "child issue search")?;
-            let page: JiraKeySearchResponse = Self::parse_jira_json(
-                resp,
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-                "child issue search",
-            )?;
+            let page: JiraKeySearchResponse = {
+                let _decode_span = debug_span!(
+                    "jira.links.child_search.decode",
+                    operation = "child issue search"
+                )
+                .entered();
+                Self::parse_jira_json(
+                    resp,
+                    req.token.as_deref(),
+                    req.account_email.as_deref(),
+                    "child issue search",
+                )?
+            };
 
             for issue in page.issues {
                 links.push(crate::model::ConversationLink {
@@ -236,11 +258,13 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
+        let _span = debug_span!("jira.hydrate.issue_comments").entered();
         let mut start_at = 0u32;
         let per_page = Self::bounded_per_page(req.per_page);
         let mut out = vec![];
 
         loop {
+            let _page_span = debug_span!("jira.comments.page", start_at, per_page).entered();
             let url = format!("{}/rest/api/3/issue/{issue_key}/comment", self.base_url);
             debug!(issue_key, start_at, per_page, "fetching Jira comment page");
             let http = Self::apply_auth(
@@ -253,12 +277,16 @@ impl JiraSource {
                 ("maxResults", per_page.to_string()),
             ]);
             let resp = Self::send(http, "comment fetch")?;
-            let page: JiraCommentsPage = Self::parse_jira_json(
-                resp,
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-                "comment fetch",
-            )?;
+            let page: JiraCommentsPage = {
+                let _decode_span =
+                    debug_span!("jira.comments.decode", operation = "comment fetch").entered();
+                Self::parse_jira_json(
+                    resp,
+                    req.token.as_deref(),
+                    req.account_email.as_deref(),
+                    "comment fetch",
+                )?
+            };
             trace!(
                 count = page.comments.len(),
                 start_at = page.start_at,
@@ -294,6 +322,7 @@ impl JiraSource {
         account_email: Option<&str>,
         operation: &str,
     ) -> Result<T> {
+        let _span = debug_span!("jira.http.decode", operation = operation).entered();
         let status = resp.status();
         let content_type = resp
             .headers()

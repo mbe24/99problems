@@ -2,7 +2,9 @@ use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 use crate::cmd::config::key::{ConfigKey, InstanceField};
-use crate::config::{DotfileConfig, InstanceConfig, account_email_env_var, token_env_var};
+use crate::config::{
+    DotfileConfig, InstanceConfig, TelemetrySection, account_email_env_var, token_env_var,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ReadScope {
@@ -47,6 +49,18 @@ pub(crate) fn load_dotfile_scope(scope: ReadScope) -> Result<DotfileConfig> {
 
 pub(crate) fn list_entries(cfg: &DotfileConfig) -> Vec<(String, String, bool)> {
     let mut entries = Vec::new();
+    if let Some(telemetry) = cfg.telemetry.as_ref() {
+        if let Some(enabled) = telemetry.enabled {
+            entries.push(("telemetry.enabled".to_string(), enabled.to_string(), false));
+        }
+        if let Some(endpoint) = telemetry.otlp_endpoint.as_ref() {
+            entries.push((
+                "telemetry.otlp_endpoint".to_string(),
+                endpoint.clone(),
+                false,
+            ));
+        }
+    }
     if let Some(default_instance) = cfg.default_instance.as_ref() {
         entries.push((
             "default_instance".to_string(),
@@ -106,6 +120,14 @@ pub(crate) fn list_entries(cfg: &DotfileConfig) -> Vec<(String, String, bool)> {
 pub(crate) fn get_key_value(cfg: &DotfileConfig, key: &ConfigKey) -> Option<String> {
     match key {
         ConfigKey::DefaultInstance => cfg.default_instance.clone(),
+        ConfigKey::TelemetryEnabled => cfg
+            .telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.enabled.map(|value| value.to_string())),
+        ConfigKey::TelemetryOtlpEndpoint => cfg
+            .telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.otlp_endpoint.clone()),
         ConfigKey::InstanceField { alias, field } => {
             let inst = cfg.instances.get(alias)?;
             match field {
@@ -186,7 +208,23 @@ fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
             return Err(anyhow!("Legacy section '[{key}]' is not supported."));
         }
     }
+    validate_telemetry_keys(table)?;
     validate_instance_keys(table)?;
+    Ok(())
+}
+
+fn validate_telemetry_keys(table: &toml::value::Table) -> Result<()> {
+    let Some(telemetry) = table.get("telemetry") else {
+        return Ok(());
+    };
+    let telemetry_table = telemetry
+        .as_table()
+        .ok_or_else(|| anyhow!("Invalid .99problems: 'telemetry' must be a TOML table."))?;
+    for key in telemetry_table.keys() {
+        if !matches!(key.as_str(), "enabled" | "otlp_endpoint") {
+            return Err(anyhow!("Unsupported key 'telemetry.{key}' in .99problems."));
+        }
+    }
     Ok(())
 }
 
@@ -254,8 +292,18 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
 }
 
 fn merge_dotfiles(home: DotfileConfig, local: DotfileConfig) -> DotfileConfig {
-    let mut merged_instances = home.instances;
-    for (alias, local_cfg) in local.instances {
+    let DotfileConfig {
+        default_instance: home_default_instance,
+        telemetry: home_telemetry,
+        instances: mut merged_instances,
+    } = home;
+    let DotfileConfig {
+        default_instance: local_default_instance,
+        telemetry: local_telemetry,
+        instances: local_instances,
+    } = local;
+
+    for (alias, local_cfg) in local_instances {
         merged_instances
             .entry(alias)
             .and_modify(|home_cfg| *home_cfg = merge_instance(home_cfg, &local_cfg))
@@ -263,8 +311,24 @@ fn merge_dotfiles(home: DotfileConfig, local: DotfileConfig) -> DotfileConfig {
     }
 
     DotfileConfig {
-        default_instance: local.default_instance.or(home.default_instance),
+        default_instance: local_default_instance.or(home_default_instance),
+        telemetry: merge_telemetry(home_telemetry, local_telemetry),
         instances: merged_instances,
+    }
+}
+
+fn merge_telemetry(
+    home: Option<TelemetrySection>,
+    local: Option<TelemetrySection>,
+) -> Option<TelemetrySection> {
+    match (home, local) {
+        (None, None) => None,
+        (Some(base), None) => Some(base),
+        (None, Some(override_cfg)) => Some(override_cfg),
+        (Some(base), Some(override_cfg)) => Some(TelemetrySection {
+            enabled: override_cfg.enabled.or(base.enabled),
+            otlp_endpoint: override_cfg.otlp_endpoint.or(base.otlp_endpoint),
+        }),
     }
 }
 
@@ -293,6 +357,7 @@ mod tests {
     fn list_entries_is_sorted_by_alias() {
         let cfg = DotfileConfig {
             default_instance: None,
+            telemetry: None,
             instances: HashMap::from([
                 (
                     "zeta".to_string(),
@@ -314,5 +379,21 @@ mod tests {
         let entries = list_entries(&cfg);
         assert_eq!(entries[0].0, "instances.alpha.platform");
         assert_eq!(entries[1].0, "instances.zeta.platform");
+    }
+
+    #[test]
+    fn list_entries_includes_telemetry_fields() {
+        let cfg = DotfileConfig {
+            default_instance: None,
+            telemetry: Some(TelemetrySection {
+                enabled: Some(true),
+                otlp_endpoint: Some("http://localhost:4318/v1/traces".to_string()),
+            }),
+            instances: HashMap::new(),
+        };
+        let entries = list_entries(&cfg);
+        assert_eq!(entries[0].0, "telemetry.enabled");
+        assert_eq!(entries[0].1, "true");
+        assert_eq!(entries[1].0, "telemetry.otlp_endpoint");
     }
 }

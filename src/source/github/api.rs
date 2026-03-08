@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reqwest::blocking::{RequestBuilder, Response};
 use serde::Deserialize;
-use tracing::{debug, trace, warn};
+use tracing::{debug, debug_span, trace, warn};
 
 use super::model::{
     ConversationSeed, IssueCommentItem, ReviewCommentItem, map_graphql_link_nodes,
@@ -30,6 +30,7 @@ impl GitHubSource {
     }
 
     pub(super) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
+        let _span = debug_span!("github.http.send", operation = operation).entered();
         req.send()
             .map_err(|err| app_error_from_reqwest("GitHub", operation, &err).into())
     }
@@ -45,6 +46,13 @@ impl GitHubSource {
         let per_page = Self::bounded_per_page(per_page);
 
         loop {
+            let _page_span = debug_span!(
+                "github.page.fetch",
+                operation = "page fetch",
+                page,
+                per_page
+            )
+            .entered();
             debug!(url = %url, page, per_page, "fetching GitHub page");
             let req = self.client.get(url).query(&[
                 ("per_page", per_page.to_string()),
@@ -67,9 +75,12 @@ impl GitHubSource {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|l| l.contains(r#"rel="next""#));
 
-            let items: Vec<T> = resp
-                .json()
-                .map_err(|err| app_error_from_decode("GitHub", "page fetch", err))?;
+            let items: Vec<T> = {
+                let _decode_span =
+                    debug_span!("github.page.decode", operation = "page fetch").entered();
+                resp.json()
+                    .map_err(|err| app_error_from_decode("GitHub", "page fetch", err))?
+            };
             trace!(count = items.len(), page, "decoded GitHub page");
             let done = items.is_empty() || !has_next;
             results.extend(items);
@@ -88,6 +99,7 @@ impl GitHubSource {
         id: u64,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
+        let _span = debug_span!("github.hydrate.issue_comments").entered();
         let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/comments");
         let raw_comments: Vec<IssueCommentItem> =
             self.get_pages(&comments_url, req.token.as_deref(), req.per_page)?;
@@ -100,6 +112,7 @@ impl GitHubSource {
         id: u64,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
+        let _span = debug_span!("github.hydrate.review_comments").entered();
         let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{id}/comments");
         let raw_comments: Vec<ReviewCommentItem> =
             self.get_pages(&comments_url, req.token.as_deref(), req.per_page)?;
@@ -113,14 +126,18 @@ impl GitHubSource {
         is_pr: bool,
         req: &FetchRequest,
     ) -> ConversationMetadata {
+        let _span = debug_span!("github.hydrate.links", is_pr).entered();
         if !req.include_links {
             return ConversationMetadata::empty();
         }
 
         let mut links: Vec<ConversationLink> = Vec::new();
         let timeline_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/timeline");
-        match self.get_pages::<serde_json::Value>(&timeline_url, req.token.as_deref(), req.per_page)
-        {
+        let timeline_result = {
+            let _timeline_span = debug_span!("github.links.timeline").entered();
+            self.get_pages::<serde_json::Value>(&timeline_url, req.token.as_deref(), req.per_page)
+        };
+        match timeline_result {
             Ok(events) => {
                 for event in events {
                     links.extend(map_timeline_links(&event));
@@ -130,7 +147,11 @@ impl GitHubSource {
         }
 
         let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}");
-        match self.get_one::<serde_json::Value>(&issue_url, req.token.as_deref()) {
+        let issue_result = {
+            let _issue_span = debug_span!("github.links.issue_detail").entered();
+            self.get_one::<serde_json::Value>(&issue_url, req.token.as_deref())
+        };
+        match issue_result {
             Ok(Some(issue)) => links.extend(map_issue_url_links(&issue)),
             Ok(None) => {}
             Err(err) => warn!(repo, id, error = %err, "GitHub issue detail link fetch failed"),
@@ -138,35 +159,42 @@ impl GitHubSource {
 
         let blocked_by_url =
             format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocked_by");
-        match self.get_pages::<serde_json::Value>(
-            &blocked_by_url,
-            req.token.as_deref(),
-            req.per_page,
-        ) {
+        let blocked_by_result = {
+            let _blocked_by_span = debug_span!("github.links.blocked_by").entered();
+            self.get_pages::<serde_json::Value>(&blocked_by_url, req.token.as_deref(), req.per_page)
+        };
+        match blocked_by_result {
             Ok(blocked_by) => links.extend(map_issue_collection_links(&blocked_by, "blocked_by")),
             Err(err) => warn!(repo, id, error = %err, "GitHub blocked_by dependency fetch failed"),
         }
 
         let blocking_url =
             format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocking");
-        match self.get_pages::<serde_json::Value>(&blocking_url, req.token.as_deref(), req.per_page)
-        {
+        let blocking_result = {
+            let _blocking_span = debug_span!("github.links.blocking").entered();
+            self.get_pages::<serde_json::Value>(&blocking_url, req.token.as_deref(), req.per_page)
+        };
+        match blocking_result {
             Ok(blocking) => links.extend(map_issue_collection_links(&blocking, "blocks")),
             Err(err) => warn!(repo, id, error = %err, "GitHub blocking dependency fetch failed"),
         }
 
         let sub_issues_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/sub_issues");
-        match self.get_pages::<serde_json::Value>(
-            &sub_issues_url,
-            req.token.as_deref(),
-            req.per_page,
-        ) {
+        let sub_issues_result = {
+            let _sub_issues_span = debug_span!("github.links.sub_issues").entered();
+            self.get_pages::<serde_json::Value>(&sub_issues_url, req.token.as_deref(), req.per_page)
+        };
+        match sub_issues_result {
             Ok(sub_issues) => links.extend(map_issue_collection_links(&sub_issues, "child")),
             Err(err) => warn!(repo, id, error = %err, "GitHub sub-issues fetch failed"),
         }
 
         let parent_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/parent");
-        match self.get_one::<serde_json::Value>(&parent_url, req.token.as_deref()) {
+        let parent_result = {
+            let _parent_span = debug_span!("github.links.parent").entered();
+            self.get_one::<serde_json::Value>(&parent_url, req.token.as_deref())
+        };
+        match parent_result {
             Ok(Some(parent)) => {
                 links.extend(map_issue_collection_links(
                     std::slice::from_ref(&parent),
@@ -177,7 +205,11 @@ impl GitHubSource {
             Err(err) => warn!(repo, id, error = %err, "GitHub parent issue fetch failed"),
         }
 
-        match self.fetch_graphql_links(repo, id, is_pr, req.token.as_deref()) {
+        let graphql_result = {
+            let _graphql_span = debug_span!("github.links.graphql").entered();
+            self.fetch_graphql_links(repo, id, is_pr, req.token.as_deref())
+        };
+        match graphql_result {
             Ok(graph_links) => links.extend(graph_links),
             Err(err) => warn!(repo, id, error = %err, "GitHub GraphQL links fetch failed"),
         }
@@ -190,6 +222,7 @@ impl GitHubSource {
         url: &str,
         token: Option<&str>,
     ) -> Result<Option<T>> {
+        let _span = debug_span!("github.single.fetch", operation = "single fetch").entered();
         let req = Self::apply_auth(self.client.get(url), token);
         let resp = Self::send(req, "single fetch")?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -202,9 +235,12 @@ impl GitHubSource {
                 .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
             return Err(AppError::from_http("GitHub", "single fetch", status, &body).into());
         }
-        let item = resp
-            .json()
-            .map_err(|err| app_error_from_decode("GitHub", "single fetch", err))?;
+        let item = {
+            let _decode_span =
+                debug_span!("github.single.decode", operation = "single fetch").entered();
+            resp.json()
+                .map_err(|err| app_error_from_decode("GitHub", "single fetch", err))?
+        };
         Ok(Some(item))
     }
 
@@ -246,7 +282,11 @@ impl GitHubSource {
         let request = Self::apply_auth(self.client.post("https://api.github.com/graphql"), token)
             .header("Content-Type", "application/json")
             .json(&body);
-        let response = Self::send(request, "graphql fetch")?;
+        let response = {
+            let _send_span =
+                debug_span!("github.graphql.send", operation = "graphql fetch").entered();
+            Self::send(request, "graphql fetch")?
+        };
         if !response.status().is_success() {
             let status = response.status();
             let body = response
@@ -254,9 +294,13 @@ impl GitHubSource {
                 .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
             return Err(AppError::from_http("GitHub", "graphql fetch", status, &body).into());
         }
-        let payload: serde_json::Value = response
-            .json()
-            .map_err(|err| app_error_from_decode("GitHub", "graphql fetch", err))?;
+        let payload: serde_json::Value = {
+            let _decode_span =
+                debug_span!("github.graphql.decode", operation = "graphql fetch").entered();
+            response
+                .json()
+                .map_err(|err| app_error_from_decode("GitHub", "graphql fetch", err))?
+        };
         if let Some(errors) = payload.get("errors") {
             return Err(
                 AppError::provider(format!("GitHub GraphQL returned errors: {errors}")).into(),
@@ -276,15 +320,27 @@ impl GitHubSource {
         item: ConversationSeed,
         req: &FetchRequest,
     ) -> Result<Conversation> {
+        let _span = debug_span!(
+            "github.hydrate.conversation",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = item.is_pr
+        )
+        .entered();
         let mut comments = Vec::new();
         if req.include_comments {
+            let _issue_comments_span = debug_span!("github.hydrate.issue_comments.stage").entered();
             comments = self.fetch_issue_comments(repo, item.id, req)?;
             if item.is_pr && req.include_review_comments {
+                let _review_comments_span =
+                    debug_span!("github.hydrate.review_comments.stage").entered();
                 comments.extend(self.fetch_review_comments(repo, item.id, req)?);
                 comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
         let metadata = if req.include_links {
+            let _links_span = debug_span!("github.hydrate.links.stage").entered();
             self.fetch_links(repo, item.id, item.is_pr, req)
         } else {
             ConversationMetadata::empty()

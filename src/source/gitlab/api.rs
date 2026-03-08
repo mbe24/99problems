@@ -4,7 +4,7 @@ use anyhow::Result;
 use reqwest::StatusCode;
 use reqwest::blocking::{RequestBuilder, Response};
 use serde::Deserialize;
-use tracing::{debug, trace, warn};
+use tracing::{debug, debug_span, trace, warn};
 
 use super::model::{
     ConversationSeed, GitLabDiscussion, GitLabIssueItem, GitLabIssueLinkItem,
@@ -31,6 +31,7 @@ impl GitLabSource {
     }
 
     pub(super) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
+        let _span = debug_span!("gitlab.http.send", operation = operation).entered();
         req.send()
             .map_err(|err| app_error_from_reqwest("GitLab", operation, &err).into())
     }
@@ -73,6 +74,13 @@ impl GitLabSource {
         let per_page = Self::bounded_per_page(per_page);
 
         loop {
+            let _page_span = debug_span!(
+                "gitlab.page.fetch",
+                operation = "page fetch",
+                page,
+                per_page
+            )
+            .entered();
             let mut query = params.to_vec();
             query.push(("per_page".into(), per_page.to_string()));
             query.push(("page".into(), page.to_string()));
@@ -117,9 +125,12 @@ impl GitLabSource {
                 .trim()
                 .to_string();
 
-            let items: Vec<T> = resp
-                .json()
-                .map_err(|err| app_error_from_decode("GitLab", "page fetch", err))?;
+            let items: Vec<T> = {
+                let _decode_span =
+                    debug_span!("gitlab.page.decode", operation = "page fetch").entered();
+                resp.json()
+                    .map_err(|err| app_error_from_decode("GitLab", "page fetch", err))?
+            };
             trace!(count = items.len(), page, "decoded GitLab page");
             for item in items {
                 emit(item)?;
@@ -141,6 +152,7 @@ impl GitLabSource {
         url: &str,
         token: Option<&str>,
     ) -> Result<Option<T>> {
+        let _span = debug_span!("gitlab.single.fetch", operation = "single fetch").entered();
         let req = Self::apply_auth(self.client.get(url), token);
         let resp = Self::send(req, "single fetch")?;
 
@@ -170,9 +182,13 @@ impl GitLabSource {
             return Err(AppError::from_http("GitLab", "single fetch", status, &body).into());
         }
 
-        Ok(Some(resp.json().map_err(|err| {
-            app_error_from_decode("GitLab", "single fetch", err)
-        })?))
+        let item = {
+            let _decode_span =
+                debug_span!("gitlab.single.decode", operation = "single fetch").entered();
+            resp.json()
+                .map_err(|err| app_error_from_decode("GitLab", "single fetch", err))?
+        };
+        Ok(Some(item))
     }
 
     pub(super) fn fetch_notes(
@@ -182,6 +198,7 @@ impl GitLabSource {
         is_pr: bool,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
+        let _span = debug_span!("gitlab.hydrate.issue_comments", is_pr).entered();
         let project = encode_project_path(repo);
         let url = if is_pr {
             format!(
@@ -210,6 +227,7 @@ impl GitLabSource {
         iid: u64,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
+        let _span = debug_span!("gitlab.hydrate.review_comments").entered();
         let project = encode_project_path(repo);
         let url = format!(
             "{}/api/v4/projects/{project}/merge_requests/{iid}/discussions",
@@ -241,6 +259,7 @@ impl GitLabSource {
         conversation_url: Option<&str>,
         req: &FetchRequest,
     ) -> ConversationMetadata {
+        let _span = debug_span!("gitlab.hydrate.links", is_pr).entered();
         if !req.include_links {
             return ConversationMetadata::empty();
         }
@@ -402,15 +421,26 @@ impl GitLabSource {
         seed: ConversationSeed,
         req: &FetchRequest,
     ) -> Result<Conversation> {
+        let _span = debug_span!(
+            "gitlab.hydrate.conversation",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = seed.is_pr
+        )
+        .entered();
         let mut comments = Vec::new();
         if req.include_comments {
+            let _notes_span = debug_span!("gitlab.hydrate.notes.stage").entered();
             comments = self.fetch_notes(repo, seed.id, seed.is_pr, req)?;
             if seed.is_pr && req.include_review_comments {
+                let _reviews_span = debug_span!("gitlab.hydrate.review_comments.stage").entered();
                 comments.extend(self.fetch_review_comments(repo, seed.id, req)?);
                 comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
         let metadata = if req.include_links {
+            let _links_span = debug_span!("gitlab.hydrate.links.stage").entered();
             self.fetch_links(repo, seed.id, seed.is_pr, seed.web_url.as_deref(), req)
         } else {
             ConversationMetadata::empty()

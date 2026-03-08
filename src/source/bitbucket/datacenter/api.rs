@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
-use tracing::{debug, trace};
+use tracing::{debug, debug_span, trace};
 
 use super::super::BitbucketSource;
 use super::super::shared::{apply_auth, parse_bitbucket_json, send};
@@ -22,6 +22,8 @@ impl BitbucketSource {
         let mut start = 0u32;
 
         loop {
+            let _page_span =
+                debug_span!("bitbucket.datacenter.page.fetch", start, per_page).entered();
             debug!(url = %url, start, per_page, "fetching Bitbucket Data Center page");
             let mut query_params = params.to_vec();
             query_params.push(("start".to_string(), start.to_string()));
@@ -31,7 +33,12 @@ impl BitbucketSource {
                 .header("Accept", "application/json")
                 .query(&query_params);
             let response = send(request, "page fetch")?;
-            let page: BitbucketDcPage<T> = parse_bitbucket_json(response, token, "page fetch")?;
+            let page: BitbucketDcPage<T> = {
+                let _decode_span =
+                    debug_span!("bitbucket.datacenter.page.decode", operation = "page fetch")
+                        .entered();
+                parse_bitbucket_json(response, token, "page fetch")?
+            };
             trace!(
                 count = page.values.len(),
                 is_last_page = page.is_last_page,
@@ -62,6 +69,8 @@ impl BitbucketSource {
         token: Option<&str>,
         operation: &str,
     ) -> Result<Option<T>> {
+        let _span =
+            debug_span!("bitbucket.datacenter.single.fetch", operation = operation).entered();
         let request = apply_auth(self.client.get(url), token).header("Accept", "application/json");
         let response = send(request, operation)?;
         if response.status() == StatusCode::NOT_FOUND {

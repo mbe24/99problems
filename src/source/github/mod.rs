@@ -1,6 +1,6 @@
 use anyhow::Result;
 use reqwest::blocking::Client;
-use tracing::{debug, trace, warn};
+use tracing::{debug, debug_span, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
@@ -47,6 +47,7 @@ impl GitHubSource {
         let repo_from_query = extract_repo(raw_query);
 
         loop {
+            let _page_span = debug_span!("github.search.page", page, per_page).entered();
             debug!(page, per_page, "fetching GitHub search page");
             let req_http = self.client.get(&search_url).query(&[
                 ("q", raw_query),
@@ -64,9 +65,12 @@ impl GitHubSource {
                 return Err(AppError::from_http("GitHub", "search", status, &body).into());
             }
 
-            let search: SearchResponse = resp
-                .json()
-                .map_err(|err| app_error_from_decode("GitHub", "search", err))?;
+            let search: SearchResponse = {
+                let _decode_span =
+                    debug_span!("github.search.decode", operation = "search").entered();
+                resp.json()
+                    .map_err(|err| app_error_from_decode("GitHub", "search", err))?
+            };
             trace!(
                 count = search.items.len(),
                 page, "decoded GitHub search page"
@@ -117,6 +121,7 @@ impl GitHubSource {
         allow_fallback_to_pr: bool,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
+        let _span = debug_span!("github.id.fetch").entered();
         let issue_id = id.parse::<u64>().map_err(|_| {
             AppError::usage(format!("GitHub expects a numeric issue/PR id, got '{id}'."))
         })?;
