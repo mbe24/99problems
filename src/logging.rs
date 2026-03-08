@@ -55,7 +55,9 @@ pub fn init(
                 let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
                 let otel_filter = tracing_subscriber::filter::filter_fn(|metadata| {
                     let target = metadata.target();
-                    target == "99problems" || target.starts_with("99problems::")
+                    target == "99problems"
+                        || target.starts_with("99problems::")
+                        || target.starts_with("reqwest_tracing")
                 });
                 tracing_subscriber::registry()
                     .with(

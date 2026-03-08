@@ -103,6 +103,10 @@ fn main() {
     } else {
         None
     };
+    let telemetry_active = cfg!(feature = "telemetry-otel")
+        && telemetry_config
+            .as_ref()
+            .is_some_and(config::TelemetryConfig::is_active);
     let mut logging_handle = match logging::init(cli.verbose, cli.quiet, telemetry_config.as_ref())
     {
         Ok(handle) => handle,
@@ -112,7 +116,7 @@ fn main() {
         }
     };
     let result = match cli.command {
-        Commands::Get(args) => cmd::get::run(&args),
+        Commands::Get(args) => cmd::get::run(&args, telemetry_active),
         Commands::Skill(args) => cmd::skill::run(&args),
         Commands::Config(args) => cmd::config::run(&args),
         Commands::Completions { shell } => {

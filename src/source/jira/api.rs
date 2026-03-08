@@ -1,8 +1,8 @@
 use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::blocking::{RequestBuilder, Response};
 use reqwest::header::CONTENT_TYPE;
-use serde::Deserialize;
+use reqwest_middleware::RequestBuilder;
+use serde::de::DeserializeOwned;
 use tracing::{debug, debug_span, trace, warn};
 
 use super::model::{
@@ -39,13 +39,25 @@ impl JiraSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    pub(super) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
-        let _span = debug_span!("jira.http.send", operation = operation).entered();
-        req.send()
-            .map_err(|err| app_error_from_reqwest("Jira", operation, &err).into())
+    pub(super) async fn send(req: RequestBuilder, operation: &str) -> Result<reqwest::Response> {
+        let _span = debug_span!("jira.http.request", operation = operation).entered();
+        req.send().await.map_err(|err| match err {
+            reqwest_middleware::Error::Reqwest(err) => {
+                app_error_from_reqwest("Jira", operation, &err).into()
+            }
+            other @ reqwest_middleware::Error::Middleware(_) => {
+                AppError::provider(format!("Jira API {operation} middleware error: {other}"))
+                    .with_provider("jira")
+                    .into()
+            }
+        })
     }
 
-    pub(super) fn fetch_issue(&self, id_or_key: &str, req: &FetchRequest) -> Result<Conversation> {
+    pub(super) async fn fetch_issue(
+        &self,
+        id_or_key: &str,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
         let _span = debug_span!("jira.hydrate.issue").entered();
         let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
         let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
@@ -55,9 +67,9 @@ impl JiraSource {
             req.account_email.as_deref(),
         )
         .query(&[("fields", fields)]);
-        let resp = Self::send(http, "issue fetch")?;
+        let resp = Self::send(http, "issue fetch").await?;
         if resp.status() == StatusCode::NOT_FOUND {
-            let body = resp.text().unwrap_or_default();
+            let body = resp.text().await.unwrap_or_default();
             let auth_hint = if req.token.is_some() {
                 if req.account_email.is_none() {
                     " Check Jira permissions or configure account_email for API-token auth."
@@ -85,16 +97,17 @@ impl JiraSource {
                 req.token.as_deref(),
                 req.account_email.as_deref(),
                 "issue fetch",
-            )?
+            )
+            .await?
         };
         let fields = issue.fields;
         let comments = if req.include_comments {
-            self.fetch_comments(&issue.key, req)?
+            self.fetch_comments(&issue.key, req).await?
         } else {
             vec![]
         };
         let metadata = if req.include_links {
-            self.fetch_metadata(&issue.key, fields.clone(), req)
+            self.fetch_metadata(&issue.key, fields.clone(), req).await
         } else {
             ConversationMetadata::empty()
         };
@@ -112,7 +125,7 @@ impl JiraSource {
         })
     }
 
-    pub(super) fn fetch_metadata(
+    pub(super) async fn fetch_metadata(
         &self,
         issue_key: &str,
         fields: JiraIssueFields,
@@ -122,7 +135,7 @@ impl JiraSource {
         let mut links = map_parent_child_links(&fields);
         links.extend(map_issue_links(fields.issuelinks));
         links.extend(map_attachment_links(fields.attachment));
-        match self.fetch_remote_links(issue_key, req) {
+        match self.fetch_remote_links(issue_key, req).await {
             Ok(remote_links) => links.extend(remote_links),
             Err(err) => {
                 warn!(
@@ -132,7 +145,7 @@ impl JiraSource {
                 );
             }
         }
-        match self.fetch_child_issue_links(issue_key, req) {
+        match self.fetch_child_issue_links(issue_key, req).await {
             Ok(child_links) => links.extend(child_links),
             Err(err) => {
                 warn!(
@@ -145,7 +158,7 @@ impl JiraSource {
         ConversationMetadata::with_links(links)
     }
 
-    fn fetch_remote_links(
+    async fn fetch_remote_links(
         &self,
         issue_key: &str,
         req: &FetchRequest,
@@ -157,7 +170,7 @@ impl JiraSource {
             req.token.as_deref(),
             req.account_email.as_deref(),
         );
-        let resp = Self::send(http, "remote link fetch")?;
+        let resp = Self::send(http, "remote link fetch").await?;
         let items: Vec<JiraRemoteLinkItem> = {
             let _decode_span =
                 debug_span!("jira.links.remote.decode", operation = "remote link fetch").entered();
@@ -166,12 +179,13 @@ impl JiraSource {
                 req.token.as_deref(),
                 req.account_email.as_deref(),
                 "remote link fetch",
-            )?
+            )
+            .await?
         };
         Ok(map_remote_links(items))
     }
 
-    fn fetch_child_issue_links(
+    async fn fetch_child_issue_links(
         &self,
         issue_key: &str,
         req: &FetchRequest,
@@ -204,7 +218,7 @@ impl JiraSource {
                 req.account_email.as_deref(),
             )
             .query(&query_params);
-            let resp = Self::send(http, "child issue search")?;
+            let resp = Self::send(http, "child issue search").await?;
             let page: JiraKeySearchResponse = {
                 let _decode_span = debug_span!(
                     "jira.links.child_search.decode",
@@ -216,7 +230,8 @@ impl JiraSource {
                     req.token.as_deref(),
                     req.account_email.as_deref(),
                     "child issue search",
-                )?
+                )
+                .await?
             };
 
             for issue in page.issues {
@@ -253,7 +268,7 @@ impl JiraSource {
         Ok(links)
     }
 
-    pub(super) fn fetch_comments(
+    pub(super) async fn fetch_comments(
         &self,
         issue_key: &str,
         req: &FetchRequest,
@@ -276,7 +291,7 @@ impl JiraSource {
                 ("startAt", start_at.to_string()),
                 ("maxResults", per_page.to_string()),
             ]);
-            let resp = Self::send(http, "comment fetch")?;
+            let resp = Self::send(http, "comment fetch").await?;
             let page: JiraCommentsPage = {
                 let _decode_span =
                     debug_span!("jira.comments.decode", operation = "comment fetch").entered();
@@ -285,7 +300,8 @@ impl JiraSource {
                     req.token.as_deref(),
                     req.account_email.as_deref(),
                     "comment fetch",
-                )?
+                )
+                .await?
             };
             trace!(
                 count = page.comments.len(),
@@ -316,8 +332,8 @@ impl JiraSource {
         Ok(out)
     }
 
-    pub(super) fn parse_jira_json<T: for<'de> Deserialize<'de>>(
-        resp: Response,
+    pub(super) async fn parse_jira_json<T: DeserializeOwned>(
+        resp: reqwest::Response,
         token: Option<&str>,
         account_email: Option<&str>,
         operation: &str,
@@ -330,7 +346,7 @@ impl JiraSource {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = resp.text()?;
+        let body = resp.text().await?;
 
         if !status.is_success() {
             let auth_hint = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN

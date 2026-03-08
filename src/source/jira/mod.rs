@@ -1,5 +1,6 @@
 use anyhow::Result;
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
 use tracing::{debug, debug_span, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
@@ -18,7 +19,7 @@ pub(super) const JIRA_DEFAULT_BASE_URL: &str = "https://jira.atlassian.com";
 pub(super) const PAGE_SIZE: u32 = 100;
 
 pub struct JiraSource {
-    client: Client,
+    client: ClientWithMiddleware,
     base_url: String,
 }
 
@@ -28,10 +29,11 @@ impl JiraSource {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be constructed.
-    pub fn new(base_url: Option<String>) -> Result<Self> {
-        let client = Client::builder()
+    pub fn new(base_url: Option<String>, telemetry_active: bool) -> Result<Self> {
+        let http_client = reqwest::Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
+        let client = Self::build_client(http_client, telemetry_active);
         let base_url = base_url
             .unwrap_or_else(|| JIRA_DEFAULT_BASE_URL.to_string())
             .trim_end_matches('/')
@@ -39,7 +41,24 @@ impl JiraSource {
         Ok(Self { client, base_url })
     }
 
-    fn search_stream(
+    #[cfg(feature = "telemetry-otel")]
+    fn build_client(http_client: reqwest::Client, telemetry_active: bool) -> ClientWithMiddleware {
+        let builder = MiddlewareClientBuilder::new(http_client);
+        if telemetry_active {
+            builder
+                .with(reqwest_tracing::TracingMiddleware::default())
+                .build()
+        } else {
+            builder.build()
+        }
+    }
+
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn build_client(http_client: reqwest::Client, _telemetry_active: bool) -> ClientWithMiddleware {
+        MiddlewareClientBuilder::new(http_client).build()
+    }
+
+    async fn search_stream(
         &self,
         req: &FetchRequest,
         raw_query: &str,
@@ -59,11 +78,12 @@ impl JiraSource {
         let mut emitted = 0usize;
 
         loop {
-            let page =
-                self.fetch_search_page(req, &jql, per_page, start_at, next_page_token.as_deref())?;
+            let page = self
+                .fetch_search_page(req, &jql, per_page, start_at, next_page_token.as_deref())
+                .await?;
             trace!(count = page.issues.len(), "decoded Jira search page");
             for issue in page.issues {
-                emit(self.build_search_conversation(req, issue)?)?;
+                emit(self.build_search_conversation(req, issue).await?)?;
                 emitted += 1;
             }
 
@@ -93,7 +113,7 @@ impl JiraSource {
         Ok(emitted)
     }
 
-    fn fetch_search_page(
+    async fn fetch_search_page(
         &self,
         req: &FetchRequest,
         jql: &str,
@@ -123,7 +143,7 @@ impl JiraSource {
             req.account_email.as_deref(),
         )
         .query(&query_params);
-        let resp = Self::send(http, "search")?;
+        let resp = Self::send(http, "search").await?;
 
         let _decode_span = debug_span!("jira.search.decode", operation = "search").entered();
         Self::parse_jira_json(
@@ -132,9 +152,10 @@ impl JiraSource {
             req.account_email.as_deref(),
             "search",
         )
+        .await
     }
 
-    fn build_search_conversation(
+    async fn build_search_conversation(
         &self,
         req: &FetchRequest,
         issue: JiraIssueItem,
@@ -142,13 +163,13 @@ impl JiraSource {
         let fields = issue.fields;
         let comments = if req.include_comments {
             let _comments_span = debug_span!("jira.search.hydrate.comments").entered();
-            self.fetch_comments(&issue.key, req)?
+            self.fetch_comments(&issue.key, req).await?
         } else {
             vec![]
         };
         let metadata = if req.include_links {
             let _links_span = debug_span!("jira.search.hydrate.links").entered();
-            self.fetch_metadata(&issue.key, fields.clone(), req)
+            self.fetch_metadata(&issue.key, fields.clone(), req).await
         } else {
             ConversationMetadata::empty()
         };
@@ -190,14 +211,15 @@ fn search_query_params(
     query_params
 }
 
+#[async_trait(?Send)]
 impl Source for JiraSource {
-    fn fetch_stream(
+    async fn fetch_stream(
         &self,
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
             FetchTarget::Id { id, kind, .. } => {
                 if matches!(kind, ContentKind::Pr) {
                     return Err(AppError::usage(
@@ -205,7 +227,7 @@ impl Source for JiraSource {
                     )
                     .into());
                 }
-                emit(self.fetch_issue(id, req)?)?;
+                emit(self.fetch_issue(id, req).await?)?;
                 Ok(1)
             }
         }

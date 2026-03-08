@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Args, ValueEnum};
 use std::io::{IsTerminal, Write};
+use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tracing::{Span, debug, info, info_span, warn};
 #[cfg(feature = "telemetry-otel")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -230,12 +231,15 @@ pub(crate) struct GetArgs {
 ///
 /// Returns an error if config resolution, request building, remote fetching,
 /// or output writing fails.
-pub(crate) fn run(args: &GetArgs) -> Result<()> {
+pub(crate) fn run(args: &GetArgs, telemetry_active: bool) -> Result<()> {
     let root_span = info_span!("cli.command.get");
     set_cli_semconv_attributes(&root_span);
     let _guard = root_span.enter();
 
-    let result = run_get_pipeline(args, &root_span);
+    let runtime = TokioRuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run_get_pipeline(args, &root_span, telemetry_active));
     match result {
         Ok((stats, _output_plan)) => {
             span_attr_i64(&root_span, "process.exit.code", 0_i64);
@@ -264,7 +268,11 @@ pub(crate) fn run(args: &GetArgs) -> Result<()> {
     }
 }
 
-fn run_get_pipeline(args: &GetArgs, root_span: &Span) -> Result<(OutputStats, OutputPlan)> {
+async fn run_get_pipeline(
+    args: &GetArgs,
+    root_span: &Span,
+    telemetry_active: bool,
+) -> Result<(OutputStats, OutputPlan)> {
     let cfg = {
         let _span = info_span!("get.resolve_config").entered();
         load_config_for_get(args)?
@@ -276,7 +284,7 @@ fn run_get_pipeline(args: &GetArgs, root_span: &Span) -> Result<(OutputStats, Ou
 
     let source = {
         let _span = info_span!("get.build_source", platform = %cfg.platform).entered();
-        build_source_for_platform(&cfg)?
+        build_source_for_platform(&cfg, telemetry_active)?
     };
     let req = {
         let _span = info_span!("get.build_request").entered();
@@ -296,18 +304,24 @@ fn run_get_pipeline(args: &GetArgs, root_span: &Span) -> Result<(OutputStats, Ou
     );
 
     let stats = match output_plan.mode {
-        ResolvedOutputMode::Batch => write_batch_output(
-            source.as_ref(),
-            &req,
-            output_plan.format,
-            args.output.as_deref(),
-        )?,
-        ResolvedOutputMode::Stream => write_stream_output(
-            source.as_ref(),
-            &req,
-            output_plan.format,
-            args.output.as_deref(),
-        )?,
+        ResolvedOutputMode::Batch => {
+            write_batch_output(
+                source.as_ref(),
+                &req,
+                output_plan.format,
+                args.output.as_deref(),
+            )
+            .await?
+        }
+        ResolvedOutputMode::Stream => {
+            write_stream_output(
+                source.as_ref(),
+                &req,
+                output_plan.format,
+                args.output.as_deref(),
+            )
+            .await?
+        }
     };
 
     Ok((stats, output_plan))
@@ -469,11 +483,14 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     Ok(())
 }
 
-fn build_source_for_platform(cfg: &Config) -> Result<Box<dyn Source>> {
+fn build_source_for_platform(cfg: &Config, telemetry_active: bool) -> Result<Box<dyn Source>> {
     match cfg.platform.as_str() {
         "github" => Ok(Box::new(GitHubSource::new()?)),
         "gitlab" => Ok(Box::new(GitLabSource::new(cfg.platform_url.clone())?)),
-        "jira" => Ok(Box::new(JiraSource::new(cfg.platform_url.clone())?)),
+        "jira" => Ok(Box::new(JiraSource::new(
+            cfg.platform_url.clone(),
+            telemetry_active,
+        )?)),
         "bitbucket" => Ok(Box::new(BitbucketSource::new(
             cfg.platform_url.clone(),
             cfg.deployment.clone(),
@@ -637,7 +654,7 @@ fn build_formatter(format: ResolvedOutputFormat) -> Box<dyn StreamFormatter> {
     }
 }
 
-fn write_batch_output(
+async fn write_batch_output(
     source: &dyn Source,
     req: &FetchRequest,
     format: ResolvedOutputFormat,
@@ -645,7 +662,7 @@ fn write_batch_output(
 ) -> Result<OutputStats> {
     let conversations = {
         let _span = info_span!("get.fetch.batch").entered();
-        source.fetch(req)?
+        source.fetch(req).await?
     };
     let mut formatter = build_formatter(format);
     let mut rendered = Vec::new();
@@ -675,7 +692,7 @@ fn write_batch_output(
     })
 }
 
-fn write_stream_output(
+async fn write_stream_output(
     source: &dyn Source,
     req: &FetchRequest,
     format: ResolvedOutputFormat,
@@ -691,11 +708,13 @@ fn write_stream_output(
     let mut emitted = 0usize;
     let fetched = {
         let _span = info_span!("get.fetch.stream").entered();
-        source.fetch_stream(req, &mut |conversation| {
-            formatter.write_item(&mut writer, &conversation)?;
-            emitted += 1;
-            Ok(())
-        })
+        source
+            .fetch_stream(req, &mut |conversation| {
+                formatter.write_item(&mut writer, &conversation)?;
+                emitted += 1;
+                Ok(())
+            })
+            .await
     };
     let fetched = match fetched {
         Ok(value) => value,
