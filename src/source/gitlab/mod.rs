@@ -1,5 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::blocking::Client;
+use tokio::task::block_in_place;
 use tracing::{debug_span, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
@@ -213,13 +215,14 @@ impl GitLabSource {
     }
 }
 
+#[async_trait(?Send)]
 impl Source for GitLabSource {
-    fn fetch_stream(
+    async fn fetch_stream(
         &self,
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        match &req.target {
+        block_in_place(|| match &req.target {
             FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
             FetchTarget::Id {
                 repo,
@@ -227,6 +230,6 @@ impl Source for GitLabSource {
                 kind,
                 allow_fallback_to_pr,
             } => self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit),
-        }
+        })
     }
 }

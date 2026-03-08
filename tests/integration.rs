@@ -14,6 +14,17 @@ mod tests {
         github::GitHubSource, gitlab::GitLabSource, jira::JiraSource,
     };
 
+    fn fetch_all<S: Source + ?Sized>(
+        source: &S,
+        req: &FetchRequest,
+    ) -> anyhow::Result<Vec<problems99::model::Conversation>> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build Tokio runtime for integration test");
+        runtime.block_on(source.fetch(req))
+    }
+
     fn github_token() -> Option<String> {
         std::env::var("GITHUB_TOKEN").ok().or_else(|| {
             problems99::config::Config::load_with_options(problems99::config::ResolveOptions {
@@ -122,7 +133,11 @@ mod tests {
     fn github_fetch_known_issue_1842() {
         let source = GitHubSource::new().unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
-        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        let conv = fetch_all(&source, &req)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(conv.id, "1842");
         assert_eq!(conv.title, "Online-only events");
         assert_eq!(conv.state, "closed");
@@ -145,7 +160,7 @@ mod tests {
             include_review_comments: false,
             include_links: false,
         };
-        let results = source.fetch(&req).unwrap();
+        let results = fetch_all(&source, &req).unwrap();
         assert!(!results.is_empty());
         for conv in &results {
             assert!(!conv.title.is_empty());
@@ -158,7 +173,11 @@ mod tests {
     fn github_fetch_one_comment_has_author_and_body() {
         let source = GitHubSource::new().unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
-        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        let conv = fetch_all(&source, &req)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         let first = conv
             .comments
             .first()
@@ -172,7 +191,11 @@ mod tests {
     fn github_fetch_pr_2402_default_issue_comments_only() {
         let source = GitHubSource::new().unwrap();
         let req = req_id("github/gitignore", "2402", false);
-        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        let conv = fetch_all(&source, &req)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
 
         assert_eq!(conv.id, "2402");
         assert!(!conv.title.is_empty());
@@ -191,7 +214,11 @@ mod tests {
     fn github_fetch_pr_2402_with_review_comments() {
         let source = GitHubSource::new().unwrap();
         let req = req_id("github/gitignore", "2402", true);
-        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        let conv = fetch_all(&source, &req)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
 
         assert_eq!(conv.id, "2402");
         assert!(
@@ -217,7 +244,7 @@ mod tests {
             include_review_comments: false,
             include_links: false,
         };
-        let results = source.fetch(&req).unwrap();
+        let results = fetch_all(&source, &req).unwrap();
         assert!(!results.is_empty());
         assert!(results.iter().any(|c| c.id == "2402"));
     }
@@ -227,7 +254,7 @@ mod tests {
     fn github_fetch_issue_as_pr_errors_when_kind_is_explicit() {
         let source = GitHubSource::new().unwrap();
         let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr, false);
-        let err = source.fetch(&req).unwrap_err().to_string();
+        let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("not a pull request"));
     }
 
@@ -236,7 +263,7 @@ mod tests {
     fn github_fetch_pr_as_issue_errors_when_fallback_is_disabled() {
         let source = GitHubSource::new().unwrap();
         let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue, false);
-        let err = source.fetch(&req).unwrap_err().to_string();
+        let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("is a pull request"));
     }
 
@@ -258,7 +285,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let conv = match source.fetch(&req) {
+        let conv = match fetch_all(&source, &req) {
             Ok(results) => results.into_iter().next().unwrap(),
             Err(err) => {
                 let msg = err.to_string();
@@ -290,7 +317,7 @@ mod tests {
             include_review_comments: true,
             include_links: true,
         };
-        let conv = match source.fetch(&req) {
+        let conv = match fetch_all(&source, &req) {
             Ok(results) => results.into_iter().next().unwrap(),
             Err(err) => {
                 let msg = err.to_string();
@@ -319,7 +346,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let results = match source.fetch(&req) {
+        let results = match fetch_all(&source, &req) {
             Ok(results) => results,
             Err(err) => {
                 let msg = err.to_string();
@@ -347,7 +374,7 @@ mod tests {
             include_review_comments: true,
             include_links: true,
         };
-        let results = match source.fetch(&req) {
+        let results = match fetch_all(&source, &req) {
             Ok(results) => results,
             Err(err) => {
                 let msg = err.to_string();
@@ -363,7 +390,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (public Jira endpoint)"]
     fn jira_fetch_public_issue_cloud_12817() {
-        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into()), false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Id {
                 repo: String::new(),
@@ -378,7 +405,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let conv = match source.fetch(&req) {
+        let conv = match fetch_all(&source, &req) {
             Ok(results) => results.into_iter().next().unwrap(),
             Err(err) => {
                 let msg = err.to_string();
@@ -395,7 +422,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (public Jira endpoint)"]
     fn jira_search_public_project() {
-        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into()), false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "repo:CLOUD state:closed CLOUD-12817".into(),
@@ -407,7 +434,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let results = match source.fetch(&req) {
+        let results = match fetch_all(&source, &req) {
             Ok(results) => results,
             Err(err) => {
                 let msg = err.to_string();
@@ -423,7 +450,7 @@ mod tests {
 
     #[test]
     fn jira_rejects_pr_kind() {
-        let source = JiraSource::new(Some("https://jira.atlassian.com".into())).unwrap();
+        let source = JiraSource::new(Some("https://jira.atlassian.com".into()), false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Id {
                 repo: String::new(),
@@ -438,7 +465,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let err = source.fetch(&req).unwrap_err().to_string();
+        let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("does not support pull requests"));
     }
 
@@ -462,7 +489,11 @@ mod tests {
             include_review_comments: true,
             include_links: true,
         };
-        let conv = source.fetch(&req).unwrap().into_iter().next().unwrap();
+        let conv = fetch_all(&source, &req)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(conv.id, pr_id);
         assert!(!conv.title.is_empty());
     }
@@ -483,7 +514,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let results = source.fetch(&req).unwrap();
+        let results = fetch_all(&source, &req).unwrap();
         assert!(!results.is_empty());
     }
 
@@ -504,7 +535,7 @@ mod tests {
             include_review_comments: false,
             include_links: true,
         };
-        let err = source.fetch(&req).unwrap_err().to_string();
+        let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("supports pull requests only"));
     }
 }

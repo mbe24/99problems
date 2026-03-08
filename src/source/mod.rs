@@ -1,5 +1,6 @@
 use crate::model::Conversation;
 use anyhow::Result;
+use async_trait::async_trait;
 
 pub mod bitbucket;
 pub mod github;
@@ -7,6 +8,7 @@ pub mod gitlab;
 pub mod jira;
 
 /// A pluggable data source that fetches issue/PR conversations.
+#[async_trait(?Send)]
 pub trait Source {
     /// Fetch issue or pull request conversations for a request target and emit
     /// each conversation incrementally.
@@ -15,7 +17,7 @@ pub trait Source {
     ///
     /// Returns an error when request validation fails, authentication fails,
     /// or the remote platform returns a non-success/invalid response.
-    fn fetch_stream(
+    async fn fetch_stream(
         &self,
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
@@ -27,12 +29,13 @@ pub trait Source {
     ///
     /// Returns an error when request validation fails, authentication fails,
     /// remote calls fail, or emitted conversations cannot be collected.
-    fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
+    async fn fetch(&self, req: &FetchRequest) -> Result<Vec<Conversation>> {
         let mut conversations = Vec::new();
         self.fetch_stream(req, &mut |conversation| {
             conversations.push(conversation);
             Ok(())
-        })?;
+        })
+        .await?;
         Ok(conversations)
     }
 }

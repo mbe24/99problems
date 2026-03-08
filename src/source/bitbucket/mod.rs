@@ -1,5 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::blocking::Client;
+use tokio::task::block_in_place;
 use tracing::debug_span;
 
 use super::{FetchRequest, Source};
@@ -77,16 +79,19 @@ impl BitbucketSource {
     }
 }
 
+#[async_trait(?Send)]
 impl Source for BitbucketSource {
-    fn fetch_stream(
+    async fn fetch_stream(
         &self,
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        let _span = debug_span!("bitbucket.fetch_stream").entered();
-        match self.deployment {
-            BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
-            BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit),
-        }
+        block_in_place(|| {
+            let _span = debug_span!("bitbucket.fetch_stream").entered();
+            match self.deployment {
+                BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
+                BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit),
+            }
+        })
     }
 }
