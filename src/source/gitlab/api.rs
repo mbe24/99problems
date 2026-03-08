@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::blocking::{RequestBuilder, Response};
+use reqwest::header::{CONTENT_TYPE, HeaderMap};
+use reqwest_middleware::RequestBuilder;
 use serde::Deserialize;
 use tracing::{debug, debug_span, trace, warn};
 
@@ -18,6 +19,13 @@ use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
 use crate::source::FetchRequest;
 
+pub(super) struct GitLabHttpPayload {
+    status: StatusCode,
+    content_type: String,
+    body: String,
+    headers: HeaderMap,
+}
+
 impl GitLabSource {
     pub(super) fn apply_auth(req: RequestBuilder, token: Option<&str>) -> RequestBuilder {
         match token {
@@ -30,13 +38,185 @@ impl GitLabSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    pub(super) fn send(req: RequestBuilder, operation: &str) -> Result<Response> {
-        let _span = debug_span!("gitlab.http.send", operation = operation).entered();
-        req.send()
-            .map_err(|err| app_error_from_reqwest("GitLab", operation, &err).into())
+    #[cfg(feature = "telemetry-otel")]
+    fn apply_otel_span_name(req: RequestBuilder, span_name: &'static str) -> RequestBuilder {
+        req.with_extension(reqwest_tracing::OtelName(span_name.into()))
     }
 
-    pub(super) fn get_pages<T: for<'de> Deserialize<'de>>(
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn apply_otel_span_name(req: RequestBuilder, _span_name: &'static str) -> RequestBuilder {
+        req
+    }
+
+    fn map_request_error(
+        operation: &str,
+        err: reqwest_middleware::Error,
+    ) -> (AppError, &'static str, String) {
+        match err {
+            reqwest_middleware::Error::Reqwest(err) => {
+                let message = err.to_string();
+                (
+                    app_error_from_reqwest("GitLab", operation, &err),
+                    "request_send_error",
+                    message,
+                )
+            }
+            other @ reqwest_middleware::Error::Middleware(_) => {
+                let message = other.to_string();
+                (
+                    AppError::provider(format!("GitLab API {operation} middleware error: {other}"))
+                        .with_provider("gitlab"),
+                    "request_middleware_error",
+                    message,
+                )
+            }
+        }
+    }
+
+    pub(super) async fn execute_request(
+        req: RequestBuilder,
+        operation: &str,
+        span_name: &'static str,
+    ) -> Result<GitLabHttpPayload> {
+        let exchange_span = debug_span!(
+            "gitlab.http.exchange",
+            operation = operation,
+            status_code = tracing::field::Empty,
+            body_bytes = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            error.message = tracing::field::Empty
+        );
+        let _exchange_guard = exchange_span.enter();
+        let response = {
+            let _request_span = debug_span!("gitlab.http.request", operation = operation).entered();
+            Self::apply_otel_span_name(req, span_name).send().await
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let (mapped, error_type, error_message) = Self::map_request_error(operation, err);
+                exchange_span.record("error.type", error_type);
+                exchange_span.record("error.message", error_message.as_str());
+                return Err(mapped.into());
+            }
+        };
+
+        let status = response.status();
+        let headers = response.headers().clone();
+        let content_type = headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = {
+            let read_span = debug_span!(
+                "gitlab.http.response.read",
+                operation = operation,
+                status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+                error.message = tracing::field::Empty
+            );
+            let _read_guard = read_span.enter();
+            read_span.record("status_code", i64::from(status.as_u16()));
+            match response.text().await {
+                Ok(body) => body,
+                Err(err) => {
+                    let error_message = err.to_string();
+                    read_span.record("error.type", "response_read_error");
+                    read_span.record("error.message", error_message.as_str());
+                    exchange_span.record("error.type", "response_read_error");
+                    exchange_span.record("error.message", error_message.as_str());
+                    return Err(app_error_from_reqwest("GitLab", operation, &err).into());
+                }
+            }
+        };
+
+        exchange_span.record("status_code", i64::from(status.as_u16()));
+        exchange_span.record("body_bytes", usize_to_i64(body.len()));
+        Ok(GitLabHttpPayload {
+            status,
+            content_type,
+            body,
+            headers,
+        })
+    }
+
+    pub(super) fn decode_gitlab_json<T: for<'de> Deserialize<'de>>(
+        payload: &GitLabHttpPayload,
+        token: Option<&str>,
+        operation: &str,
+    ) -> Result<T> {
+        let decode_span = debug_span!(
+            "gitlab.http.decode",
+            operation = operation,
+            status_code = i64::from(payload.status.as_u16()),
+            content_type = payload.content_type.as_str(),
+            error.type = tracing::field::Empty,
+            error.message = tracing::field::Empty
+        );
+        let _decode_guard = decode_span.enter();
+
+        if !payload.status.is_success() {
+            let error_message = format!("HTTP {}", payload.status.as_u16());
+            decode_span.record("error.type", "http_status");
+            decode_span.record("error.message", error_message.as_str());
+
+            if payload.status == StatusCode::UNAUTHORIZED || payload.status == StatusCode::FORBIDDEN
+            {
+                let hint = if token.is_some() {
+                    "GitLab token seems invalid or lacks required scope (use read_api)."
+                } else {
+                    "No GitLab token detected. Set --token, GITLAB_TOKEN, or [instances.<alias>].token."
+                };
+                return Err(AppError::auth(format!(
+                    "GitLab API auth error {}: {hint} {}",
+                    payload.status,
+                    body_snippet(&payload.body)
+                ))
+                .with_provider("gitlab")
+                .with_http_status(payload.status)
+                .into());
+            }
+
+            return Err(
+                AppError::from_http("GitLab", operation, payload.status, &payload.body)
+                    .with_provider("gitlab")
+                    .into(),
+            );
+        }
+
+        if !payload.content_type.contains("application/json") {
+            let error_message = format!("unexpected content-type '{}'", payload.content_type);
+            decode_span.record("error.type", "unexpected_content_type");
+            decode_span.record("error.message", error_message.as_str());
+            return Err(AppError::provider(format!(
+                "GitLab API {} returned non-JSON content-type '{}' (body starts with: {}).",
+                operation,
+                payload.content_type,
+                body_snippet(&payload.body)
+            ))
+            .with_provider("gitlab")
+            .with_http_status(payload.status)
+            .into());
+        }
+
+        match serde_json::from_str(&payload.body) {
+            Ok(decoded) => Ok(decoded),
+            Err(err) => {
+                let error_message = format!("decode failed: {err}");
+                decode_span.record("error.type", "decode_error");
+                decode_span.record("error.message", error_message.as_str());
+                Err(app_error_from_decode(
+                    "GitLab",
+                    operation,
+                    format!("{err} (body starts with: {})", body_snippet(&payload.body)),
+                )
+                .into())
+            }
+        }
+    }
+
+    pub(super) async fn get_pages<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
         params: &[(String, String)],
@@ -45,31 +225,6 @@ impl GitLabSource {
         allow_unauthenticated_empty: bool,
     ) -> Result<Vec<T>> {
         let mut results = vec![];
-        self.get_pages_stream(
-            url,
-            params,
-            token,
-            per_page,
-            allow_unauthenticated_empty,
-            &mut |item| {
-                results.push(item);
-                Ok(())
-            },
-        )?;
-        Ok(results)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn get_pages_stream<T: for<'de> Deserialize<'de>>(
-        &self,
-        url: &str,
-        params: &[(String, String)],
-        token: Option<&str>,
-        per_page: u32,
-        allow_unauthenticated_empty: bool,
-        emit: &mut dyn FnMut(T) -> Result<()>,
-    ) -> Result<usize> {
-        let mut emitted = 0usize;
         let mut page = 1u32;
         let per_page = Self::bounded_per_page(per_page);
 
@@ -87,38 +242,45 @@ impl GitLabSource {
             debug!(url = %url, page, per_page, "fetching GitLab page");
 
             let req = Self::apply_auth(self.client.get(url).query(&query), token);
-            let resp = Self::send(req, "page fetch")?;
+            let payload = Self::execute_request(req, "page fetch", "reqwest.http.get").await?;
 
-            if !resp.status().is_success() {
-                let status = resp.status();
+            if !payload.status.is_success() {
                 if allow_unauthenticated_empty
                     && token.is_none()
-                    && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
+                    && (payload.status == StatusCode::UNAUTHORIZED
+                        || payload.status == StatusCode::FORBIDDEN)
                 {
-                    return Ok(0);
+                    return Ok(vec![]);
                 }
-                if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                    let body = resp.text()?;
+                if payload.status == StatusCode::UNAUTHORIZED
+                    || payload.status == StatusCode::FORBIDDEN
+                {
                     let hint = if token.is_some() {
                         "GitLab token seems invalid or lacks required scope (use read_api)."
                     } else {
                         "No GitLab token detected. Set --token, GITLAB_TOKEN, or [instances.<alias>].token."
                     };
                     return Err(AppError::auth(format!(
-                        "GitLab API auth error {status}: {hint} {body}"
+                        "GitLab API auth error {}: {hint} {}",
+                        payload.status,
+                        body_snippet(&payload.body)
                     ))
                     .with_provider("gitlab")
-                    .with_http_status(status)
+                    .with_http_status(payload.status)
                     .into());
                 }
-                let body = resp
-                    .text()
-                    .map_err(|err| app_error_from_reqwest("GitLab", "error body read", &err))?;
-                return Err(AppError::from_http("GitLab", "page fetch", status, &body).into());
+                return Err(AppError::from_http(
+                    "GitLab",
+                    "page fetch",
+                    payload.status,
+                    &payload.body,
+                )
+                .with_provider("gitlab")
+                .into());
             }
 
-            let next_page = resp
-                .headers()
+            let next_page = payload
+                .headers
                 .get("x-next-page")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
@@ -128,14 +290,10 @@ impl GitLabSource {
             let items: Vec<T> = {
                 let _decode_span =
                     debug_span!("gitlab.page.decode", operation = "page fetch").entered();
-                resp.json()
-                    .map_err(|err| app_error_from_decode("GitLab", "page fetch", err))?
+                Self::decode_gitlab_json(&payload, token, "page fetch")?
             };
             trace!(count = items.len(), page, "decoded GitLab page");
-            for item in items {
-                emit(item)?;
-                emitted += 1;
-            }
+            results.extend(items);
 
             if next_page.is_empty() {
                 break;
@@ -144,61 +302,43 @@ impl GitLabSource {
             page = next_page.parse::<u32>().unwrap_or(page + 1);
         }
 
-        Ok(emitted)
+        Ok(results)
     }
 
-    pub(super) fn get_one<T: for<'de> Deserialize<'de>>(
+    pub(super) async fn get_one<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
         token: Option<&str>,
     ) -> Result<Option<T>> {
         let _span = debug_span!("gitlab.single.fetch", operation = "single fetch").entered();
         let req = Self::apply_auth(self.client.get(url), token);
-        let resp = Self::send(req, "single fetch")?;
+        let payload = Self::execute_request(req, "single fetch", "reqwest.http.get").await?;
 
-        if resp.status() == StatusCode::NOT_FOUND {
+        if payload.status == StatusCode::NOT_FOUND {
             return Ok(None);
-        }
-        if resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::FORBIDDEN {
-            let status = resp.status();
-            let hint = if token.is_some() {
-                "GitLab token seems invalid or lacks required scope (use read_api)."
-            } else {
-                "No GitLab token detected. Set --token, GITLAB_TOKEN, or [instances.<alias>].token."
-            };
-            let body = resp.text()?;
-            return Err(
-                AppError::auth(format!("GitLab API auth error {status}: {hint} {body}"))
-                    .with_provider("gitlab")
-                    .with_http_status(status)
-                    .into(),
-            );
-        }
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp
-                .text()
-                .map_err(|err| app_error_from_reqwest("GitLab", "error body read", &err))?;
-            return Err(AppError::from_http("GitLab", "single fetch", status, &body).into());
         }
 
         let item = {
             let _decode_span =
                 debug_span!("gitlab.single.decode", operation = "single fetch").entered();
-            resp.json()
-                .map_err(|err| app_error_from_decode("GitLab", "single fetch", err))?
+            Self::decode_gitlab_json(&payload, token, "single fetch")?
         };
         Ok(Some(item))
     }
 
-    pub(super) fn fetch_notes(
+    pub(super) async fn fetch_notes(
         &self,
         repo: &str,
         iid: u64,
         is_pr: bool,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
-        let _span = debug_span!("gitlab.hydrate.issue_comments", is_pr).entered();
+        let span = debug_span!(
+            "gitlab.hydrate.issue_comments",
+            is_pr,
+            gitlab.comments.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let project = encode_project_path(repo);
         let url = if is_pr {
             format!(
@@ -212,30 +352,38 @@ impl GitLabSource {
             )
         };
 
-        let notes: Vec<GitLabNote> =
-            self.get_pages(&url, &[], req.token.as_deref(), req.per_page, true)?;
-        Ok(notes
+        let notes: Vec<GitLabNote> = self
+            .get_pages(&url, &[], req.token.as_deref(), req.per_page, true)
+            .await?;
+        let comments: Vec<Comment> = notes
             .into_iter()
             .filter(|n| !n.system)
             .map(map_note_comment)
-            .collect())
+            .collect();
+        span.record("gitlab.comments.count", usize_to_i64(comments.len()));
+        Ok(comments)
     }
 
-    pub(super) fn fetch_review_comments(
+    pub(super) async fn fetch_review_comments(
         &self,
         repo: &str,
         iid: u64,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
-        let _span = debug_span!("gitlab.hydrate.review_comments").entered();
+        let span = debug_span!(
+            "gitlab.hydrate.review_comments",
+            gitlab.review_comments.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let project = encode_project_path(repo);
         let url = format!(
             "{}/api/v4/projects/{project}/merge_requests/{iid}/discussions",
             self.base_url
         );
 
-        let discussions: Vec<GitLabDiscussion> =
-            self.get_pages(&url, &[], req.token.as_deref(), req.per_page, true)?;
+        let discussions: Vec<GitLabDiscussion> = self
+            .get_pages(&url, &[], req.token.as_deref(), req.per_page, true)
+            .await?;
         let mut seen = HashSet::new();
         let mut comments = vec![];
 
@@ -248,10 +396,11 @@ impl GitLabSource {
             }
         }
 
+        span.record("gitlab.review_comments.count", usize_to_i64(comments.len()));
         Ok(comments)
     }
 
-    pub(super) fn fetch_links(
+    pub(super) async fn fetch_links(
         &self,
         repo: &str,
         iid: u64,
@@ -259,7 +408,12 @@ impl GitLabSource {
         conversation_url: Option<&str>,
         req: &FetchRequest,
     ) -> ConversationMetadata {
-        let _span = debug_span!("gitlab.hydrate.links", is_pr).entered();
+        let span = debug_span!(
+            "gitlab.hydrate.links",
+            is_pr,
+            gitlab.links.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         if !req.include_links {
             return ConversationMetadata::empty();
         }
@@ -270,16 +424,19 @@ impl GitLabSource {
             links.push(map_url_reference(url));
         }
         if is_pr {
-            self.collect_pr_links(&project, repo, iid, req, &mut links);
+            self.collect_pr_links(&project, repo, iid, req, &mut links)
+                .await;
         } else {
-            self.collect_issue_links(&project, repo, iid, req, &mut links);
+            self.collect_issue_links(&project, repo, iid, req, &mut links)
+                .await;
         }
 
         prune_redundant_relates(&mut links);
+        span.record("gitlab.links.count", usize_to_i64(links.len()));
         ConversationMetadata::with_links(links)
     }
 
-    fn collect_pr_links(
+    async fn collect_pr_links(
         &self,
         project: &str,
         repo: &str,
@@ -291,13 +448,16 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/merge_requests/{iid}/closes_issues",
             self.base_url
         );
-        match self.get_pages::<GitLabRelatedIssueRef>(
-            &closes_url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            true,
-        ) {
+        match self
+            .get_pages::<GitLabRelatedIssueRef>(
+                &closes_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )
+            .await
+        {
             Ok(closed_issues) => {
                 for issue in closed_issues {
                     if let Some(url) = issue.web_url.as_deref() {
@@ -315,13 +475,16 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/merge_requests/{iid}/related_issues",
             self.base_url
         );
-        match self.get_pages::<GitLabRelatedIssueRef>(
-            &related_issues_url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            true,
-        ) {
+        match self
+            .get_pages::<GitLabRelatedIssueRef>(
+                &related_issues_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )
+            .await
+        {
             Ok(related_issues) => {
                 for issue in related_issues {
                     if let Some(url) = issue.web_url.as_deref() {
@@ -336,7 +499,7 @@ impl GitLabSource {
         }
     }
 
-    fn collect_issue_links(
+    async fn collect_issue_links(
         &self,
         project: &str,
         repo: &str,
@@ -348,13 +511,16 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/issues/{iid}/links",
             self.base_url
         );
-        match self.get_pages::<GitLabIssueLinkItem>(
-            &links_url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            true,
-        ) {
+        match self
+            .get_pages::<GitLabIssueLinkItem>(
+                &links_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )
+            .await
+        {
             Ok(issue_links) => {
                 links.extend(
                     issue_links
@@ -369,13 +535,16 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/issues/{iid}/closed_by",
             self.base_url
         );
-        match self.get_pages::<GitLabMergeRequestRef>(
-            &closed_by_url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            true,
-        ) {
+        match self
+            .get_pages::<GitLabMergeRequestRef>(
+                &closed_by_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )
+            .await
+        {
             Ok(closed_by) => {
                 for mr in closed_by {
                     if let Some(url) = mr.web_url.as_deref() {
@@ -391,13 +560,16 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/issues/{iid}/related_merge_requests",
             self.base_url
         );
-        match self.get_pages::<GitLabMergeRequestRef>(
-            &related_mr_url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            true,
-        ) {
+        match self
+            .get_pages::<GitLabMergeRequestRef>(
+                &related_mr_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+            )
+            .await
+        {
             Ok(related_mrs) => {
                 for mr in related_mrs {
                     if let Some(url) = mr.web_url.as_deref() {
@@ -415,7 +587,7 @@ impl GitLabSource {
         }
     }
 
-    pub(super) fn fetch_conversation(
+    pub(super) async fn fetch_conversation(
         &self,
         repo: &str,
         seed: ConversationSeed,
@@ -432,16 +604,17 @@ impl GitLabSource {
         let mut comments = Vec::new();
         if req.include_comments {
             let _notes_span = debug_span!("gitlab.hydrate.notes.stage").entered();
-            comments = self.fetch_notes(repo, seed.id, seed.is_pr, req)?;
+            comments = self.fetch_notes(repo, seed.id, seed.is_pr, req).await?;
             if seed.is_pr && req.include_review_comments {
                 let _reviews_span = debug_span!("gitlab.hydrate.review_comments.stage").entered();
-                comments.extend(self.fetch_review_comments(repo, seed.id, req)?);
+                comments.extend(self.fetch_review_comments(repo, seed.id, req).await?);
                 comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
         let metadata = if req.include_links {
             let _links_span = debug_span!("gitlab.hydrate.links.stage").entered();
             self.fetch_links(repo, seed.id, seed.is_pr, seed.web_url.as_deref(), req)
+                .await
         } else {
             ConversationMetadata::empty()
         };
@@ -456,7 +629,7 @@ impl GitLabSource {
         })
     }
 
-    pub(super) fn fetch_issue_by_iid(
+    pub(super) async fn fetch_issue_by_iid(
         &self,
         repo: &str,
         iid: u64,
@@ -464,10 +637,10 @@ impl GitLabSource {
     ) -> Result<Option<GitLabIssueItem>> {
         let project = encode_project_path(repo);
         let url = format!("{}/api/v4/projects/{project}/issues/{iid}", self.base_url);
-        self.get_one(&url, token)
+        self.get_one(&url, token).await
     }
 
-    pub(super) fn fetch_mr_by_iid(
+    pub(super) async fn fetch_mr_by_iid(
         &self,
         repo: &str,
         iid: u64,
@@ -478,7 +651,7 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/merge_requests/{iid}",
             self.base_url
         );
-        self.get_one(&url, token)
+        self.get_one(&url, token).await
     }
 }
 
@@ -505,4 +678,15 @@ fn relation_rank(relation: &str) -> u8 {
         "relates" => 1,
         _ => 0,
     }
+}
+
+fn body_snippet(body: &str) -> String {
+    body.chars()
+        .take(200)
+        .collect::<String>()
+        .replace('\n', " ")
+}
+
+fn usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }

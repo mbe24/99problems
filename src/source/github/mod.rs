@@ -1,11 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::blocking::Client;
-use tokio::task::block_in_place;
+use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
 use tracing::{debug, debug_span, trace, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
-use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
+use crate::error::AppError;
 use crate::model::Conversation;
 
 mod api;
@@ -20,7 +19,7 @@ pub(super) const GITHUB_API_VERSION: &str = "2022-11-28";
 pub(super) const PAGE_SIZE: u32 = 100;
 
 pub struct GitHubSource {
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 impl GitHubSource {
@@ -29,14 +28,32 @@ impl GitHubSource {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be constructed.
-    pub fn new() -> Result<Self> {
-        let client = Client::builder()
+    pub fn new(telemetry_active: bool) -> Result<Self> {
+        let http_client = reqwest::Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
+        let client = Self::build_client(http_client, telemetry_active);
         Ok(Self { client })
     }
 
-    fn search_stream(
+    #[cfg(feature = "telemetry-otel")]
+    fn build_client(http_client: reqwest::Client, telemetry_active: bool) -> ClientWithMiddleware {
+        let builder = MiddlewareClientBuilder::new(http_client);
+        if telemetry_active {
+            builder
+                .with(reqwest_tracing::TracingMiddleware::default())
+                .build()
+        } else {
+            builder.build()
+        }
+    }
+
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn build_client(http_client: reqwest::Client, _telemetry_active: bool) -> ClientWithMiddleware {
+        MiddlewareClientBuilder::new(http_client).build()
+    }
+
+    async fn search_stream(
         &self,
         req: &FetchRequest,
         raw_query: &str,
@@ -57,21 +74,11 @@ impl GitHubSource {
                 ("page", &page.to_string()),
             ]);
             let req_http = Self::apply_auth(req_http, req.token.as_deref());
-            let resp = Self::send(req_http, "search")?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp
-                    .text()
-                    .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
-                return Err(AppError::from_http("GitHub", "search", status, &body).into());
-            }
-
+            let payload = Self::execute_request(req_http, "search", "reqwest.http.get").await?;
             let search: SearchResponse = {
                 let _decode_span =
                     debug_span!("github.search.decode", operation = "search").entered();
-                resp.json()
-                    .map_err(|err| app_error_from_decode("GitHub", "search", err))?
+                Self::decode_github_json(&payload, req.token.as_deref(), "search")?
             };
             trace!(
                 count = search.items.len(),
@@ -91,17 +98,19 @@ impl GitHubSource {
                         ))
                     })?;
 
-                let conversation = self.fetch_conversation(
-                    &repo,
-                    ConversationSeed {
-                        id: item.number,
-                        title: item.title,
-                        state: item.state,
-                        body: item.body,
-                        is_pr: item.pull_request.is_some(),
-                    },
-                    req,
-                )?;
+                let conversation = self
+                    .fetch_conversation(
+                        &repo,
+                        ConversationSeed {
+                            id: item.number,
+                            title: item.title,
+                            state: item.state,
+                            body: item.body,
+                            is_pr: item.pull_request.is_some(),
+                        },
+                        req,
+                    )
+                    .await?;
                 emit(conversation)?;
                 emitted += 1;
             }
@@ -114,7 +123,7 @@ impl GitHubSource {
         Ok(emitted)
     }
 
-    fn fetch_by_id_stream(
+    async fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
@@ -129,17 +138,9 @@ impl GitHubSource {
         })?;
         let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
         let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
-        let resp = Self::send(request, "issue fetch")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp
-                .text()
-                .map_err(|err| app_error_from_reqwest("GitHub", "error body read", &err))?;
-            return Err(AppError::from_http("GitHub", "issue fetch", status, &body).into());
-        }
-        let issue: IssueItem = resp
-            .json()
-            .map_err(|err| app_error_from_decode("GitHub", "issue fetch", err))?;
+        let payload = Self::execute_request(request, "issue fetch", "reqwest.http.get").await?;
+        let issue: IssueItem =
+            Self::decode_github_json(&payload, req.token.as_deref(), "issue fetch")?;
         let is_pr = issue.pull_request.is_some();
 
         match kind {
@@ -163,17 +164,19 @@ impl GitHubSource {
             _ => {}
         }
 
-        let conversation = self.fetch_conversation(
-            repo,
-            ConversationSeed {
-                id: issue.number,
-                title: issue.title,
-                state: issue.state,
-                body: issue.body,
-                is_pr,
-            },
-            req,
-        )?;
+        let conversation = self
+            .fetch_conversation(
+                repo,
+                ConversationSeed {
+                    id: issue.number,
+                    title: issue.title,
+                    state: issue.state,
+                    body: issue.body,
+                    is_pr,
+                },
+                req,
+            )
+            .await?;
         emit(conversation)?;
         Ok(1)
     }
@@ -186,14 +189,17 @@ impl Source for GitHubSource {
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        block_in_place(|| match &req.target {
-            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
+        match &req.target {
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
             FetchTarget::Id {
                 repo,
                 id,
                 kind,
                 allow_fallback_to_pr,
-            } => self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit),
-        })
+            } => {
+                self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit)
+                    .await
+            }
+        }
     }
 }

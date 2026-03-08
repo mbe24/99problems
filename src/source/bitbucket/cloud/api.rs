@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use tracing::{debug, debug_span, trace};
 
-use super::super::shared::{apply_auth, parse_bitbucket_json, send};
+use super::super::shared::{apply_auth, decode_bitbucket_json, execute_request};
 use super::super::{BitbucketSource, PAGE_SIZE};
 use super::model::BitbucketPage;
 
@@ -12,7 +12,7 @@ impl BitbucketSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    pub(super) fn cloud_get_one<T: DeserializeOwned>(
+    pub(super) async fn cloud_get_one<T: DeserializeOwned>(
         &self,
         url: &str,
         token: Option<&str>,
@@ -20,25 +20,23 @@ impl BitbucketSource {
     ) -> Result<Option<T>> {
         let _span = debug_span!("bitbucket.cloud.single.fetch", operation = operation).entered();
         let request = apply_auth(self.client.get(url), token).header("Accept", "application/json");
-        let response = send(request, operation)?;
-        if response.status() == StatusCode::NOT_FOUND {
+        let payload = execute_request(request, operation).await?;
+        if payload.status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let item = parse_bitbucket_json(response, token, operation)?;
+        let item = decode_bitbucket_json(&payload, token, operation)?;
         Ok(Some(item))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn cloud_get_pages_stream<T: DeserializeOwned>(
+    pub(super) async fn cloud_get_pages<T: DeserializeOwned>(
         &self,
         url: &str,
         params: &[(String, String)],
         token: Option<&str>,
         per_page: u32,
-        emit: &mut dyn FnMut(T) -> Result<()>,
-    ) -> Result<usize> {
+    ) -> Result<Vec<T>> {
         let per_page = Self::bounded_per_page(per_page);
-        let mut emitted = 0usize;
+        let mut out = Vec::new();
         let mut next_url = Some(url.to_string());
         let mut first = true;
 
@@ -54,20 +52,17 @@ impl BitbucketSource {
                 first = false;
             }
 
-            let response = send(request, "page fetch")?;
+            let payload = execute_request(request, "page fetch").await?;
             let page: BitbucketPage<T> = {
                 let _decode_span =
                     debug_span!("bitbucket.cloud.page.decode", operation = "page fetch").entered();
-                parse_bitbucket_json(response, token, "page fetch")?
+                decode_bitbucket_json(&payload, token, "page fetch")?
             };
             trace!(count = page.values.len(), "decoded Bitbucket cloud page");
-            for item in page.values {
-                emit(item)?;
-                emitted += 1;
-            }
+            out.extend(page.values);
             next_url = page.next;
         }
 
-        Ok(emitted)
+        Ok(out)
     }
 }

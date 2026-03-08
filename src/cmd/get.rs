@@ -485,8 +485,11 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
 
 fn build_source_for_platform(cfg: &Config, telemetry_active: bool) -> Result<Box<dyn Source>> {
     match cfg.platform.as_str() {
-        "github" => Ok(Box::new(GitHubSource::new()?)),
-        "gitlab" => Ok(Box::new(GitLabSource::new(cfg.platform_url.clone())?)),
+        "github" => Ok(Box::new(GitHubSource::new(telemetry_active)?)),
+        "gitlab" => Ok(Box::new(GitLabSource::new(
+            cfg.platform_url.clone(),
+            telemetry_active,
+        )?)),
         "jira" => Ok(Box::new(JiraSource::new(
             cfg.platform_url.clone(),
             telemetry_active,
@@ -494,6 +497,7 @@ fn build_source_for_platform(cfg: &Config, telemetry_active: bool) -> Result<Box
         "bitbucket" => Ok(Box::new(BitbucketSource::new(
             cfg.platform_url.clone(),
             cfg.deployment.clone(),
+            telemetry_active,
         )?)),
         other => Err(AppError::usage(format!("Platform '{other}' is not yet supported")).into()),
     }

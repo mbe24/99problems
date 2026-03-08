@@ -14,23 +14,23 @@ mod api;
 mod model;
 
 impl BitbucketSource {
-    pub(super) fn fetch_cloud_stream(
+    pub(super) async fn fetch_cloud_stream(
         &self,
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
             FetchTarget::Id {
                 repo,
                 id,
                 kind,
                 allow_fallback_to_pr: _,
-            } => self.fetch_by_id_stream(req, repo, id, *kind, emit),
+            } => self.fetch_by_id_stream(req, repo, id, *kind, emit).await,
         }
     }
 
-    fn search_stream(
+    async fn search_stream(
         &self,
         req: &FetchRequest,
         raw_query: &str,
@@ -46,10 +46,10 @@ impl BitbucketSource {
         let (workspace, repo_slug) = parse_workspace_repo(filters.repo.as_deref())?;
         let repo = format!("{workspace}/{repo_slug}");
 
-        self.search_prs_stream(req, &repo, &filters, emit)
+        self.search_prs_stream(req, &repo, &filters, emit).await
     }
 
-    fn search_prs_stream(
+    async fn search_prs_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
@@ -61,26 +61,23 @@ impl BitbucketSource {
             ("sort".to_string(), "-updated_on".to_string()),
             ("state".to_string(), "ALL".to_string()),
         ];
+        let items: Vec<BitbucketPullRequestItem> = self
+            .cloud_get_pages(&url, &params, req.token.as_deref(), req.per_page)
+            .await?;
+
         let mut emitted = 0usize;
-        self.cloud_get_pages_stream(
-            &url,
-            &params,
-            req.token.as_deref(),
-            req.per_page,
-            &mut |item: BitbucketPullRequestItem| {
-                if !matches_pr_filters(&item, filters) {
-                    return Ok(());
-                }
-                let conversation = self.fetch_pr_conversation(repo, item, req)?;
-                emit(conversation)?;
-                emitted += 1;
-                Ok(())
-            },
-        )?;
+        for item in items {
+            if !matches_pr_filters(&item, filters) {
+                continue;
+            }
+            let conversation = self.fetch_pr_conversation(repo, item, req).await?;
+            emit(conversation)?;
+            emitted += 1;
+        }
         Ok(emitted)
     }
 
-    fn fetch_by_id_stream(
+    async fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
@@ -101,8 +98,8 @@ impl BitbucketSource {
             )
             .into()),
             ContentKind::Pr => {
-                if let Some(pr) = self.fetch_pr_by_id(&repo, id, req)? {
-                    emit(self.fetch_pr_conversation(&repo, pr, req)?)?;
+                if let Some(pr) = self.fetch_pr_by_id(&repo, id, req).await? {
+                    emit(self.fetch_pr_conversation(&repo, pr, req).await?)?;
                     return Ok(1);
                 }
                 Err(
@@ -113,7 +110,7 @@ impl BitbucketSource {
         }
     }
 
-    fn fetch_pr_by_id(
+    async fn fetch_pr_by_id(
         &self,
         repo: &str,
         id: u64,
@@ -121,16 +118,17 @@ impl BitbucketSource {
     ) -> Result<Option<BitbucketPullRequestItem>> {
         let url = format!("{}/repositories/{repo}/pullrequests/{id}", self.base_url);
         self.cloud_get_one(&url, req.token.as_deref(), "pull request fetch")
+            .await
     }
 
-    fn fetch_pr_conversation(
+    async fn fetch_pr_conversation(
         &self,
         repo: &str,
         item: BitbucketPullRequestItem,
         req: &FetchRequest,
     ) -> Result<Conversation> {
         let comments = if req.include_comments {
-            self.fetch_pr_comments(repo, item.id, req)?
+            self.fetch_pr_comments(repo, item.id, req).await?
         } else {
             Vec::new()
         };
@@ -152,33 +150,39 @@ impl BitbucketSource {
         })
     }
 
-    fn fetch_pr_comments(
+    async fn fetch_pr_comments(
         &self,
         repo: &str,
         id: u64,
         req: &FetchRequest,
     ) -> Result<Vec<crate::model::Comment>> {
+        let span = tracing::debug_span!(
+            "bitbucket.hydrate.issue_comments",
+            bitbucket.comments.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let url = format!(
             "{}/repositories/{repo}/pullrequests/{id}/comments",
             self.base_url
         );
+        let items: Vec<BitbucketCommentItem> = self
+            .cloud_get_pages(&url, &[], req.token.as_deref(), req.per_page)
+            .await?;
+
         let mut comments = Vec::new();
-        self.cloud_get_pages_stream(
-            &url,
-            &[],
-            req.token.as_deref(),
-            req.per_page,
-            &mut |item: BitbucketCommentItem| {
-                if item.deleted.unwrap_or(false) {
-                    return Ok(());
-                }
-                if let Some(mapped) = map_pr_comment(item, req.include_review_comments) {
-                    comments.push(mapped);
-                }
-                Ok(())
-            },
-        )?;
+        for item in items {
+            if item.deleted.unwrap_or(false) {
+                continue;
+            }
+            if let Some(mapped) = map_pr_comment(item, req.include_review_comments) {
+                comments.push(mapped);
+            }
+        }
         comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        span.record(
+            "bitbucket.comments.count",
+            i64::try_from(comments.len()).unwrap_or(i64::MAX),
+        );
         Ok(comments)
     }
 }
