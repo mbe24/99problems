@@ -143,16 +143,15 @@ impl JiraSource {
             req.account_email.as_deref(),
         )
         .query(&query_params);
-        let resp = Self::send(http, "search").await?;
+        let payload = Self::execute_request(http, "search").await?;
 
         let _decode_span = debug_span!("jira.search.decode", operation = "search").entered();
-        Self::parse_jira_json(
-            resp,
+        Self::decode_jira_json(
+            &payload,
             req.token.as_deref(),
             req.account_email.as_deref(),
             "search",
         )
-        .await
     }
 
     async fn build_search_conversation(

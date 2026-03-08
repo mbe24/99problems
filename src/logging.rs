@@ -57,7 +57,12 @@ pub fn init(
                     let target = metadata.target();
                     target == "99problems"
                         || target.starts_with("99problems::")
+                        || target.starts_with("reqwest")
                         || target.starts_with("reqwest_tracing")
+                        || target.starts_with("hyper")
+                        || target.starts_with("hyper_util")
+                        || target.starts_with("h2")
+                        || target.starts_with("rustls")
                 });
                 tracing_subscriber::registry()
                     .with(

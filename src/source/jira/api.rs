@@ -15,6 +15,12 @@ use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation, ConversationMetadata};
 use crate::source::FetchRequest;
 
+pub(super) struct JiraHttpPayload {
+    status: StatusCode,
+    content_type: String,
+    body: String,
+}
+
 impl JiraSource {
     pub(super) fn apply_auth(
         req: RequestBuilder,
@@ -39,17 +45,102 @@ impl JiraSource {
         per_page.clamp(1, PAGE_SIZE)
     }
 
-    pub(super) async fn send(req: RequestBuilder, operation: &str) -> Result<reqwest::Response> {
-        let _span = debug_span!("jira.http.request", operation = operation).entered();
-        req.send().await.map_err(|err| match err {
+    #[cfg(feature = "telemetry-otel")]
+    fn apply_otel_span_name(req: RequestBuilder) -> RequestBuilder {
+        req.with_extension(reqwest_tracing::OtelName("reqwest.http.get".into()))
+    }
+
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn apply_otel_span_name(req: RequestBuilder) -> RequestBuilder {
+        req
+    }
+
+    fn map_request_error(
+        operation: &str,
+        err: reqwest_middleware::Error,
+    ) -> (AppError, &'static str, String) {
+        match err {
             reqwest_middleware::Error::Reqwest(err) => {
-                app_error_from_reqwest("Jira", operation, &err).into()
+                let message = err.to_string();
+                (
+                    app_error_from_reqwest("Jira", operation, &err),
+                    "request_send_error",
+                    message,
+                )
             }
             other @ reqwest_middleware::Error::Middleware(_) => {
-                AppError::provider(format!("Jira API {operation} middleware error: {other}"))
-                    .with_provider("jira")
-                    .into()
+                let message = other.to_string();
+                (
+                    AppError::provider(format!("Jira API {operation} middleware error: {other}"))
+                        .with_provider("jira"),
+                    "request_middleware_error",
+                    message,
+                )
             }
+        }
+    }
+
+    pub(super) async fn execute_request(
+        req: RequestBuilder,
+        operation: &str,
+    ) -> Result<JiraHttpPayload> {
+        let exchange_span = debug_span!(
+            "jira.http.exchange",
+            operation = operation,
+            status_code = tracing::field::Empty,
+            body_bytes = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            error.message = tracing::field::Empty
+        );
+        let _exchange_guard = exchange_span.enter();
+        let response = {
+            let _request_span = debug_span!("jira.http.request", operation = operation).entered();
+            Self::apply_otel_span_name(req).send().await
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let (mapped, error_type, error_message) = Self::map_request_error(operation, err);
+                exchange_span.record("error.type", error_type);
+                exchange_span.record("error.message", error_message.as_str());
+                return Err(mapped.into());
+            }
+        };
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = {
+            let read_span = debug_span!(
+                "jira.http.response.read",
+                operation = operation,
+                status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+                error.message = tracing::field::Empty
+            );
+            let _read_guard = read_span.enter();
+            read_span.record("status_code", i64::from(status.as_u16()));
+            match response.text().await {
+                Ok(body) => body,
+                Err(err) => {
+                    let error_message = err.to_string();
+                    read_span.record("error.type", "response_read_error");
+                    read_span.record("error.message", error_message.as_str());
+                    exchange_span.record("error.type", "response_read_error");
+                    exchange_span.record("error.message", error_message.as_str());
+                    return Err(app_error_from_reqwest("Jira", operation, &err).into());
+                }
+            }
+        };
+        exchange_span.record("status_code", i64::from(status.as_u16()));
+        exchange_span.record("body_bytes", usize_to_i64(body.len()));
+        Ok(JiraHttpPayload {
+            status,
+            content_type,
+            body,
         })
     }
 
@@ -67,9 +158,8 @@ impl JiraSource {
             req.account_email.as_deref(),
         )
         .query(&[("fields", fields)]);
-        let resp = Self::send(http, "issue fetch").await?;
-        if resp.status() == StatusCode::NOT_FOUND {
-            let body = resp.text().await.unwrap_or_default();
+        let payload = Self::execute_request(http, "issue fetch").await?;
+        if payload.status == StatusCode::NOT_FOUND {
             let auth_hint = if req.token.is_some() {
                 if req.account_email.is_none() {
                     " Check Jira permissions or configure account_email for API-token auth."
@@ -83,7 +173,7 @@ impl JiraSource {
                 "Jira issue '{}' was not found or is not accessible.{} Response: {}",
                 id_or_key,
                 auth_hint,
-                body_snippet(&body)
+                body_snippet(&payload.body)
             ))
             .with_provider("jira")
             .with_http_status(StatusCode::NOT_FOUND)
@@ -92,13 +182,12 @@ impl JiraSource {
         let issue: JiraIssueItem = {
             let _decode_span =
                 debug_span!("jira.issue.decode", operation = "issue fetch").entered();
-            Self::parse_jira_json(
-                resp,
+            Self::decode_jira_json(
+                &payload,
                 req.token.as_deref(),
                 req.account_email.as_deref(),
                 "issue fetch",
-            )
-            .await?
+            )?
         };
         let fields = issue.fields;
         let comments = if req.include_comments {
@@ -163,26 +252,31 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<crate::model::ConversationLink>> {
-        let _span = debug_span!("jira.links.remote").entered();
+        let span = debug_span!(
+            "jira.links.remote",
+            jira.links.remote.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let url = format!("{}/rest/api/3/issue/{issue_key}/remotelink", self.base_url);
         let http = Self::apply_auth(
             self.client.get(&url),
             req.token.as_deref(),
             req.account_email.as_deref(),
         );
-        let resp = Self::send(http, "remote link fetch").await?;
+        let payload = Self::execute_request(http, "remote link fetch").await?;
         let items: Vec<JiraRemoteLinkItem> = {
             let _decode_span =
                 debug_span!("jira.links.remote.decode", operation = "remote link fetch").entered();
-            Self::parse_jira_json(
-                resp,
+            Self::decode_jira_json(
+                &payload,
                 req.token.as_deref(),
                 req.account_email.as_deref(),
                 "remote link fetch",
-            )
-            .await?
+            )?
         };
-        Ok(map_remote_links(items))
+        let links = map_remote_links(items);
+        span.record("jira.links.remote.count", usize_to_i64(links.len()));
+        Ok(links)
     }
 
     async fn fetch_child_issue_links(
@@ -190,7 +284,11 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<crate::model::ConversationLink>> {
-        let _span = debug_span!("jira.links.child_search").entered();
+        let span = debug_span!(
+            "jira.links.child_search",
+            jira.links.child.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let per_page = Self::bounded_per_page(req.per_page);
         let mut start_at = 0u32;
         let mut next_page_token: Option<String> = None;
@@ -218,20 +316,19 @@ impl JiraSource {
                 req.account_email.as_deref(),
             )
             .query(&query_params);
-            let resp = Self::send(http, "child issue search").await?;
+            let payload = Self::execute_request(http, "child issue search").await?;
             let page: JiraKeySearchResponse = {
                 let _decode_span = debug_span!(
                     "jira.links.child_search.decode",
                     operation = "child issue search"
                 )
                 .entered();
-                Self::parse_jira_json(
-                    resp,
+                Self::decode_jira_json(
+                    &payload,
                     req.token.as_deref(),
                     req.account_email.as_deref(),
                     "child issue search",
-                )
-                .await?
+                )?
             };
 
             for issue in page.issues {
@@ -265,6 +362,7 @@ impl JiraSource {
             break;
         }
 
+        span.record("jira.links.child.count", usize_to_i64(links.len()));
         Ok(links)
     }
 
@@ -273,7 +371,11 @@ impl JiraSource {
         issue_key: &str,
         req: &FetchRequest,
     ) -> Result<Vec<Comment>> {
-        let _span = debug_span!("jira.hydrate.issue_comments").entered();
+        let span = debug_span!(
+            "jira.hydrate.issue_comments",
+            jira.comments.count = tracing::field::Empty
+        );
+        let _span_guard = span.enter();
         let mut start_at = 0u32;
         let per_page = Self::bounded_per_page(req.per_page);
         let mut out = vec![];
@@ -291,17 +393,16 @@ impl JiraSource {
                 ("startAt", start_at.to_string()),
                 ("maxResults", per_page.to_string()),
             ]);
-            let resp = Self::send(http, "comment fetch").await?;
+            let payload = Self::execute_request(http, "comment fetch").await?;
             let page: JiraCommentsPage = {
                 let _decode_span =
                     debug_span!("jira.comments.decode", operation = "comment fetch").entered();
-                Self::parse_jira_json(
-                    resp,
+                Self::decode_jira_json(
+                    &payload,
                     req.token.as_deref(),
                     req.account_email.as_deref(),
                     "comment fetch",
-                )
-                .await?
+                )?
             };
             trace!(
                 count = page.comments.len(),
@@ -329,27 +430,32 @@ impl JiraSource {
             start_at = next;
         }
 
+        span.record("jira.comments.count", usize_to_i64(out.len()));
         Ok(out)
     }
 
-    pub(super) async fn parse_jira_json<T: DeserializeOwned>(
-        resp: reqwest::Response,
+    pub(super) fn decode_jira_json<T: DeserializeOwned>(
+        payload: &JiraHttpPayload,
         token: Option<&str>,
         account_email: Option<&str>,
         operation: &str,
     ) -> Result<T> {
-        let _span = debug_span!("jira.http.decode", operation = operation).entered();
-        let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body = resp.text().await?;
+        let decode_span = debug_span!(
+            "jira.http.decode",
+            operation = operation,
+            status_code = i64::from(payload.status.as_u16()),
+            content_type = payload.content_type.as_str(),
+            error.type = tracing::field::Empty,
+            error.message = tracing::field::Empty
+        );
+        let _decode_guard = decode_span.enter();
 
-        if !status.is_success() {
-            let auth_hint = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN
+        if !payload.status.is_success() {
+            let error_message = format!("HTTP {}", payload.status.as_u16());
+            decode_span.record("error.type", "http_status");
+            decode_span.record("error.message", error_message.as_str());
+            let auth_hint = if payload.status == StatusCode::UNAUTHORIZED
+                || payload.status == StatusCode::FORBIDDEN
             {
                 if token.is_some() {
                     if account_email.is_some() {
@@ -363,34 +469,43 @@ impl JiraSource {
             } else {
                 ""
             };
-            let mut err =
-                AppError::from_http("Jira", operation, status, &body).with_provider("jira");
+            let mut err = AppError::from_http("Jira", operation, payload.status, &payload.body)
+                .with_provider("jira");
             if !auth_hint.is_empty() {
                 err = err.with_hint(auth_hint.trim());
             }
             return Err(err.into());
         }
 
-        if !content_type.contains("application/json") {
+        if !payload.content_type.contains("application/json") {
+            let error_message = format!("unexpected content-type '{}'", payload.content_type);
+            decode_span.record("error.type", "unexpected_content_type");
+            decode_span.record("error.message", error_message.as_str());
             return Err(AppError::provider(format!(
                 "Jira API {} returned non-JSON content-type '{}' (body starts with: {}). This often means an auth/login page.",
                 operation,
-                content_type,
-                body_snippet(&body)
+                payload.content_type,
+                body_snippet(&payload.body)
             ))
             .with_provider("jira")
-            .with_http_status(status)
+            .with_http_status(payload.status)
             .into());
         }
 
-        serde_json::from_str(&body).map_err(|e| {
-            app_error_from_decode(
-                "Jira",
-                operation,
-                format!("{e} (body starts with: {})", body_snippet(&body)),
-            )
-            .into()
-        })
+        match serde_json::from_str(&payload.body) {
+            Ok(decoded) => Ok(decoded),
+            Err(err) => {
+                let error_message = format!("decode failed: {err}");
+                decode_span.record("error.type", "decode_error");
+                decode_span.record("error.message", error_message.as_str());
+                Err(app_error_from_decode(
+                    "Jira",
+                    operation,
+                    format!("{err} (body starts with: {})", body_snippet(&payload.body)),
+                )
+                .into())
+            }
+        }
     }
 }
 
@@ -399,4 +514,8 @@ fn body_snippet(body: &str) -> String {
         .take(200)
         .collect::<String>()
         .replace('\n', " ")
+}
+
+fn usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
