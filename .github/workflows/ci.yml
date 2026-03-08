@@ -36,16 +36,42 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --no-deps -- -D warnings
+        run: cargo clippy --no-deps --features telemetry-otel -- -D warnings
 
       - name: Unit tests
-        run: cargo test
+        run: cargo test --features telemetry-otel
 
       - name: Integration tests
         if: env.GITHUB_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo test -- --include-ignored --skip jira_ --skip bitbucket_
+        run: cargo test --features telemetry-otel -- --include-ignored --skip jira_ --skip bitbucket_
+
+  test_no_telemetry:
+    name: Test (no telemetry feature)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check build (no telemetry)
+        run: cargo check --no-default-features
+
+      - name: Unit tests (no telemetry)
+        run: cargo test --no-default-features
 
   clippy_pedantic:
     name: Clippy (pedantic, advisory)
@@ -70,4 +96,4 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Clippy pedantic
-        run: cargo clippy --all-targets --no-deps -- -W clippy::pedantic
+        run: cargo clippy --all-targets --no-deps --features telemetry-otel -- -W clippy::pedantic

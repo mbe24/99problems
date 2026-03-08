@@ -92,11 +92,25 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(err) = logging::init(cli.verbose, cli.quiet) {
-        let app_err = classify_anyhow_error(&err);
-        render_and_exit(&app_err, cli.error_format);
-    }
-
+    let telemetry_config = if matches!(&cli.command, Commands::Get(_)) {
+        match config::load_telemetry_config() {
+            Ok(cfg) => Some(cfg),
+            Err(err) => {
+                eprintln!("Warning: telemetry config could not be loaded: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut logging_handle = match logging::init(cli.verbose, cli.quiet, telemetry_config.as_ref())
+    {
+        Ok(handle) => handle,
+        Err(err) => {
+            let app_err = classify_anyhow_error(&err);
+            render_and_exit(&app_err, cli.error_format);
+        }
+    };
     let result = match cli.command {
         Commands::Get(args) => cmd::get::run(&args),
         Commands::Skill(args) => cmd::skill::run(&args),
@@ -110,8 +124,10 @@ fn main() {
 
     if let Err(err) = result {
         let app_err = classify_anyhow_error(&err);
+        logging_handle.shutdown();
         render_and_exit(&app_err, cli.error_format);
     }
+    logging_handle.shutdown();
 }
 
 fn print_completions<G: Generator>(generator: G, out: &mut dyn Write) {

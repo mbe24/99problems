@@ -18,10 +18,34 @@ pub struct InstanceConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
+pub struct TelemetrySection {
+    pub enabled: Option<bool>,
+    pub otlp_endpoint: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct DotfileConfig {
     pub default_instance: Option<String>,
+    pub telemetry: Option<TelemetrySection>,
     #[serde(default)]
     pub instances: HashMap<String, InstanceConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    pub otlp_endpoint: Option<String>,
+}
+
+impl TelemetryConfig {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.enabled
+            && self
+                .otlp_endpoint
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +99,18 @@ impl Config {
     }
 }
 
+/// Load and resolve telemetry config from dotfiles.
+///
+/// # Errors
+///
+/// Returns an error if reading/parsing dotfiles fails or unsupported keys are
+/// present.
+pub fn load_telemetry_config() -> Result<TelemetryConfig> {
+    let home = load_dotfile(home_dotfile_path())?;
+    let local = load_dotfile(local_dotfile_path())?;
+    Ok(resolve_telemetry_config(home, local))
+}
+
 #[must_use]
 fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> InstanceConfig {
     InstanceConfig {
@@ -101,8 +137,18 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
 
 #[must_use]
 fn merge_dotfiles(home: DotfileConfig, local: DotfileConfig) -> DotfileConfig {
-    let mut merged_instances = home.instances;
-    for (alias, local_cfg) in local.instances {
+    let DotfileConfig {
+        default_instance: home_default_instance,
+        telemetry: home_telemetry,
+        instances: mut merged_instances,
+    } = home;
+    let DotfileConfig {
+        default_instance: local_default_instance,
+        telemetry: local_telemetry,
+        instances: local_instances,
+    } = local;
+
+    for (alias, local_cfg) in local_instances {
         merged_instances
             .entry(alias)
             .and_modify(|home_cfg| *home_cfg = merge_instance(home_cfg, &local_cfg))
@@ -110,8 +156,35 @@ fn merge_dotfiles(home: DotfileConfig, local: DotfileConfig) -> DotfileConfig {
     }
 
     DotfileConfig {
-        default_instance: local.default_instance.or(home.default_instance),
+        default_instance: local_default_instance.or(home_default_instance),
+        telemetry: merge_telemetry(home_telemetry, local_telemetry),
         instances: merged_instances,
+    }
+}
+
+#[must_use]
+fn merge_telemetry(
+    home: Option<TelemetrySection>,
+    local: Option<TelemetrySection>,
+) -> Option<TelemetrySection> {
+    match (home, local) {
+        (None, None) => None,
+        (Some(base), None) => Some(base),
+        (None, Some(override_cfg)) => Some(override_cfg),
+        (Some(base), Some(override_cfg)) => Some(TelemetrySection {
+            enabled: override_cfg.enabled.or(base.enabled),
+            otlp_endpoint: override_cfg.otlp_endpoint.or(base.otlp_endpoint),
+        }),
+    }
+}
+
+#[must_use]
+fn resolve_telemetry_config(home: DotfileConfig, local: DotfileConfig) -> TelemetryConfig {
+    let merged = merge_dotfiles(home, local);
+    let telemetry = merged.telemetry.unwrap_or_default();
+    TelemetryConfig {
+        enabled: telemetry.enabled.unwrap_or(false),
+        otlp_endpoint: telemetry.otlp_endpoint,
     }
 }
 
@@ -350,7 +423,23 @@ fn validate_dotfile_keys(table: &toml::value::Table) -> Result<()> {
             return Err(anyhow!("Legacy section '[{key}]' is not supported."));
         }
     }
+    validate_telemetry_keys(table)?;
     validate_instance_keys(table)?;
+    Ok(())
+}
+
+fn validate_telemetry_keys(table: &toml::value::Table) -> Result<()> {
+    let Some(telemetry) = table.get("telemetry") else {
+        return Ok(());
+    };
+    let telemetry_table = telemetry
+        .as_table()
+        .ok_or_else(|| anyhow!("Invalid .99problems: 'telemetry' must be a TOML table."))?;
+    for key in telemetry_table.keys() {
+        if !matches!(key.as_str(), "enabled" | "otlp_endpoint") {
+            return Err(anyhow!("Unsupported key 'telemetry.{key}' in .99problems."));
+        }
+    }
     Ok(())
 }
 
@@ -623,6 +712,7 @@ mod tests {
     fn merge_instances_deep_merges_fields() {
         let home = DotfileConfig {
             default_instance: None,
+            telemetry: None,
             instances: HashMap::from([(
                 "work".to_string(),
                 InstanceConfig {
@@ -640,6 +730,7 @@ mod tests {
         };
         let local = DotfileConfig {
             default_instance: Some("work".to_string()),
+            telemetry: None,
             instances: HashMap::from([(
                 "work".to_string(),
                 InstanceConfig {
@@ -696,5 +787,44 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("Deployment is only supported"));
+    }
+
+    #[test]
+    fn telemetry_is_parsed_and_resolved_from_dotfiles() {
+        let home = parse_dotfile_content(
+            r#"
+            [telemetry]
+            enabled = false
+            otlp_endpoint = "http://home:4318/v1/traces"
+            "#,
+        )
+        .unwrap();
+        let local = parse_dotfile_content(
+            r"
+            [telemetry]
+            enabled = true
+            ",
+        )
+        .unwrap();
+
+        let telemetry = resolve_telemetry_config(home, local);
+        assert!(telemetry.enabled);
+        assert_eq!(
+            telemetry.otlp_endpoint.as_deref(),
+            Some("http://home:4318/v1/traces")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_telemetry_key() {
+        let err = parse_dotfile_content(
+            r#"
+            [telemetry]
+            foo = "bar"
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("telemetry.foo"));
     }
 }

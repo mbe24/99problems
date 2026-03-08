@@ -208,6 +208,10 @@ mod tests {
             ConfigKey::DefaultInstance
         ));
         assert!(matches!(
+            ConfigKey::parse("telemetry.enabled").unwrap(),
+            ConfigKey::TelemetryEnabled
+        ));
+        assert!(matches!(
             ConfigKey::parse("instances.work.platform").unwrap(),
             ConfigKey::InstanceField {
                 alias,

@@ -13,6 +13,16 @@ path = "src/main.rs"
 name = "problems99"
 path = "src/lib.rs"
 
+[features]
+default = ["telemetry-otel"]
+telemetry-otel = [
+  "dep:tokio",
+  "dep:opentelemetry",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry_sdk",
+  "dep:tracing-opentelemetry",
+]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -23,10 +33,15 @@ reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], def
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 toml = "1.0.3"
 toml_edit = "0.22"
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.32", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-client"], optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"], optional = true }
 
 [dev-dependencies]
 serde_json = "1"

@@ -3,6 +3,8 @@ use anyhow::{Result, anyhow};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigKey {
     DefaultInstance,
+    TelemetryEnabled,
+    TelemetryOtlpEndpoint,
     InstanceField { alias: String, field: InstanceField },
 }
 
@@ -46,11 +48,17 @@ impl ConfigKey {
         if trimmed == "default_instance" {
             return Ok(Self::DefaultInstance);
         }
+        if trimmed == "telemetry.enabled" {
+            return Ok(Self::TelemetryEnabled);
+        }
+        if trimmed == "telemetry.otlp_endpoint" {
+            return Ok(Self::TelemetryOtlpEndpoint);
+        }
 
         let parts: Vec<&str> = trimmed.split('.').collect();
         if parts.len() != 3 || parts.first() != Some(&"instances") {
             return Err(anyhow!(
-                "Invalid key path '{raw}'. Use 'default_instance' or 'instances.<alias>.<field>'."
+                "Invalid key path '{raw}'. Use 'default_instance', 'telemetry.enabled', 'telemetry.otlp_endpoint', or 'instances.<alias>.<field>'."
             ));
         }
         let alias = parts[1].trim();
@@ -103,6 +111,18 @@ mod tests {
         assert_eq!(
             ConfigKey::parse("default_instance").unwrap(),
             ConfigKey::DefaultInstance
+        );
+    }
+
+    #[test]
+    fn parses_telemetry_keys() {
+        assert_eq!(
+            ConfigKey::parse("telemetry.enabled").unwrap(),
+            ConfigKey::TelemetryEnabled
+        );
+        assert_eq!(
+            ConfigKey::parse("telemetry.otlp_endpoint").unwrap(),
+            ConfigKey::TelemetryOtlpEndpoint
         );
     }
 

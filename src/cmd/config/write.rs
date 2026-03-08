@@ -23,6 +23,13 @@ pub(crate) fn set(scope: WriteScope, key: &ConfigKey, raw_value: &str) -> Result
         ConfigKey::DefaultInstance => {
             doc["default_instance"] = value(raw_value);
         }
+        ConfigKey::TelemetryEnabled => {
+            let enabled = raw_value.parse::<bool>()?;
+            doc["telemetry"]["enabled"] = value(enabled);
+        }
+        ConfigKey::TelemetryOtlpEndpoint => {
+            doc["telemetry"]["otlp_endpoint"] = value(raw_value);
+        }
         ConfigKey::InstanceField { alias, field } => {
             let instances_item = doc.entry("instances").or_insert(Item::Table(Table::new()));
             let instances_table = instances_item
@@ -72,6 +79,12 @@ pub(crate) fn unset(scope: WriteScope, key: &ConfigKey) -> Result<()> {
         ConfigKey::DefaultInstance => {
             let _ = doc.as_table_mut().remove("default_instance");
         }
+        ConfigKey::TelemetryEnabled => {
+            remove_telemetry_field(&mut doc, "enabled");
+        }
+        ConfigKey::TelemetryOtlpEndpoint => {
+            remove_telemetry_field(&mut doc, "otlp_endpoint");
+        }
         ConfigKey::InstanceField { alias, field } => {
             if let Some(instances_table) = doc.get_mut("instances").and_then(Item::as_table_mut) {
                 if let Some(instance_item) = instances_table.get_mut(alias)
@@ -98,8 +111,12 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
         return Err(anyhow!("Value cannot be empty."));
     }
 
-    if let ConfigKey::InstanceField { field, .. } = key {
-        match field {
+    match key {
+        ConfigKey::DefaultInstance | ConfigKey::TelemetryOtlpEndpoint => {}
+        ConfigKey::TelemetryEnabled => {
+            let _ = raw_value.parse::<bool>()?;
+        }
+        ConfigKey::InstanceField { field, .. } => match field {
             InstanceField::Platform => match raw_value {
                 "github" | "gitlab" | "jira" | "bitbucket" => {}
                 _ => {
@@ -131,10 +148,19 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
             | InstanceField::AccountEmail
             | InstanceField::Repo
             | InstanceField::State => {}
-        }
+        },
     }
 
     Ok(())
+}
+
+fn remove_telemetry_field(doc: &mut DocumentMut, field: &str) {
+    if let Some(telemetry_table) = doc.get_mut("telemetry").and_then(Item::as_table_mut) {
+        let _ = telemetry_table.remove(field);
+        if telemetry_table.is_empty() {
+            let _ = doc.as_table_mut().remove("telemetry");
+        }
+    }
 }
 
 fn load_or_create_doc(path: &Path) -> Result<DocumentMut> {

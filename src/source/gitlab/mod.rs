@@ -1,6 +1,6 @@
 use anyhow::Result;
 use reqwest::blocking::Client;
-use tracing::warn;
+use tracing::{debug_span, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::AppError;
@@ -46,6 +46,7 @@ impl GitLabSource {
         raw_query: &str,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
+        let _span = debug_span!("gitlab.search").entered();
         let filters = parse_gitlab_query(raw_query);
         let repo = filters
             .repo
@@ -128,6 +129,7 @@ impl GitLabSource {
         allow_fallback_to_pr: bool,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
+        let _span = debug_span!("gitlab.id.fetch").entered();
         let iid = id.parse::<u64>().map_err(|_| {
             AppError::usage(format!("GitLab expects a numeric issue/MR id, got '{id}'."))
         })?;
