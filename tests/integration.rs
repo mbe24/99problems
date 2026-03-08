@@ -131,7 +131,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_known_issue_1842() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
         let conv = fetch_all(&source, &req)
             .unwrap()
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_search_returns_results() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "is:issue state:closed EventSeries repo:schemaorg/schemaorg".into(),
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_one_comment_has_author_and_body() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
         let conv = fetch_all(&source, &req)
             .unwrap()
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_2402_default_issue_comments_only() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id("github/gitignore", "2402", false);
         let conv = fetch_all(&source, &req)
             .unwrap()
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_2402_with_review_comments() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id("github/gitignore", "2402", true);
         let conv = fetch_all(&source, &req)
             .unwrap()
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_search_pr_query_includes_2402() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "repo:github/gitignore is:pr 2402".into(),
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_issue_as_pr_errors_when_kind_is_explicit() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr, false);
         let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("not a pull request"));
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_as_issue_errors_when_fallback_is_disabled() {
-        let source = GitHubSource::new().unwrap();
+        let source = GitHubSource::new(false).unwrap();
         let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue, false);
         let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("is a pull request"));
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
     fn gitlab_fetch_issue_6() {
-        let source = GitLabSource::new(None).unwrap();
+        let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Id {
                 repo: "veloren/veloren".into(),
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
     fn gitlab_fetch_mr_6() {
-        let source = GitLabSource::new(None).unwrap();
+        let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Id {
                 repo: "veloren/veloren".into(),
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
     fn gitlab_search_issue_results() {
-        let source = GitLabSource::new(None).unwrap();
+        let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "repo:veloren/veloren is:issue state:closed terrain".into(),
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
     fn gitlab_search_mr_results() {
-        let source = GitLabSource::new(None).unwrap();
+        let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Search {
                 raw_query: "repo:veloren/veloren is:pr state:closed netcode".into(),
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network and BITBUCKET_REPO/BITBUCKET_PR_ID env vars"]
     fn bitbucket_cloud_fetch_pr_by_id() {
-        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let source = BitbucketSource::new(None, Some("cloud".into()), false).unwrap();
         let repo = required_env("BITBUCKET_REPO");
         let pr_id = required_env("BITBUCKET_PR_ID");
         let req = FetchRequest {
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     #[ignore = "requires live network and BITBUCKET_REPO env var"]
     fn bitbucket_cloud_search_pr_results() {
-        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let source = BitbucketSource::new(None, Some("cloud".into()), false).unwrap();
         let repo = required_env("BITBUCKET_REPO");
         let req = FetchRequest {
             target: FetchTarget::Search {
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn bitbucket_cloud_rejects_issue_kind() {
-        let source = BitbucketSource::new(None, Some("cloud".into())).unwrap();
+        let source = BitbucketSource::new(None, Some("cloud".into()), false).unwrap();
         let req = FetchRequest {
             target: FetchTarget::Id {
                 repo: "workspace/repo".into(),

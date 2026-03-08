@@ -30,8 +30,8 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 clap_mangen = "0.2"
 dirs = "6.0.0"
-reqwest = { version = "0.13", features = ["blocking", "json", "query", "rustls"], default-features = false }
-reqwest-middleware = { version = "0.5.1", features = ["query"] }
+reqwest = { version = "0.13", features = ["json", "query", "rustls"], default-features = false }
+reqwest-middleware = { version = "0.5.1", features = ["json", "query"] }
 reqwest-tracing = { version = "0.7.0", features = ["opentelemetry_0_31"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

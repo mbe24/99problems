@@ -1,4 +1,4 @@
-use reqwest::blocking::RequestBuilder;
+use reqwest_middleware::RequestBuilder;
 
 pub(in crate::source::bitbucket) fn apply_auth(
     req: RequestBuilder,

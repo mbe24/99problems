@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::blocking::Client;
-use tokio::task::block_in_place;
+use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
 use tracing::{debug_span, warn};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
@@ -19,7 +18,7 @@ pub(super) const GITLAB_DEFAULT_BASE_URL: &str = "https://gitlab.com";
 pub(super) const PAGE_SIZE: u32 = 100;
 
 pub struct GitLabSource {
-    client: Client,
+    client: ClientWithMiddleware,
     base_url: String,
 }
 
@@ -29,11 +28,12 @@ impl GitLabSource {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be constructed.
-    pub fn new(base_url: Option<String>) -> Result<Self> {
-        let client = Client::builder()
+    pub fn new(base_url: Option<String>, telemetry_active: bool) -> Result<Self> {
+        let http_client = reqwest::Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
 
+        let client = Self::build_client(http_client, telemetry_active);
         let base_url = base_url
             .unwrap_or_else(|| GITLAB_DEFAULT_BASE_URL.to_string())
             .trim_end_matches('/')
@@ -42,7 +42,24 @@ impl GitLabSource {
         Ok(Self { client, base_url })
     }
 
-    fn search_stream(
+    #[cfg(feature = "telemetry-otel")]
+    fn build_client(http_client: reqwest::Client, telemetry_active: bool) -> ClientWithMiddleware {
+        let builder = MiddlewareClientBuilder::new(http_client);
+        if telemetry_active {
+            builder
+                .with(reqwest_tracing::TracingMiddleware::default())
+                .build()
+        } else {
+            builder.build()
+        }
+    }
+
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn build_client(http_client: reqwest::Client, _telemetry_active: bool) -> ClientWithMiddleware {
+        MiddlewareClientBuilder::new(http_client).build()
+    }
+
+    async fn search_stream(
         &self,
         req: &FetchRequest,
         raw_query: &str,
@@ -66,14 +83,12 @@ impl GitLabSource {
         match filters.kind {
             ContentKind::Issue => {
                 let url = format!("{}/api/v4/projects/{project}/issues", self.base_url);
-                self.get_pages_stream(
-                    &url,
-                    &params,
-                    req.token.as_deref(),
-                    req.per_page,
-                    false,
-                    &mut |i: GitLabIssueItem| {
-                        let conversation = self.fetch_conversation(
+                let issues: Vec<GitLabIssueItem> = self
+                    .get_pages(&url, &params, req.token.as_deref(), req.per_page, false)
+                    .await?;
+                for i in issues {
+                    let conversation = self
+                        .fetch_conversation(
                             &repo,
                             ConversationSeed {
                                 id: i.iid,
@@ -84,23 +99,20 @@ impl GitLabSource {
                                 web_url: i.web_url,
                             },
                             req,
-                        )?;
-                        emit(conversation)?;
-                        emitted += 1;
-                        Ok(())
-                    },
-                )?;
+                        )
+                        .await?;
+                    emit(conversation)?;
+                    emitted += 1;
+                }
             }
             ContentKind::Pr => {
                 let url = format!("{}/api/v4/projects/{project}/merge_requests", self.base_url);
-                self.get_pages_stream(
-                    &url,
-                    &params,
-                    req.token.as_deref(),
-                    req.per_page,
-                    false,
-                    &mut |mr: GitLabMergeRequestItem| {
-                        let conversation = self.fetch_conversation(
+                let mrs: Vec<GitLabMergeRequestItem> = self
+                    .get_pages(&url, &params, req.token.as_deref(), req.per_page, false)
+                    .await?;
+                for mr in mrs {
+                    let conversation = self
+                        .fetch_conversation(
                             &repo,
                             ConversationSeed {
                                 id: mr.iid,
@@ -111,18 +123,17 @@ impl GitLabSource {
                                 web_url: mr.web_url,
                             },
                             req,
-                        )?;
-                        emit(conversation)?;
-                        emitted += 1;
-                        Ok(())
-                    },
-                )?;
+                        )
+                        .await?;
+                    emit(conversation)?;
+                    emitted += 1;
+                }
             }
         }
         Ok(emitted)
     }
 
-    fn fetch_by_id_stream(
+    async fn fetch_by_id_stream(
         &self,
         req: &FetchRequest,
         repo: &str,
@@ -137,41 +148,50 @@ impl GitLabSource {
         })?;
         match kind {
             ContentKind::Issue => {
-                if let Some(issue) = self.fetch_issue_by_iid(repo, iid, req.token.as_deref())? {
-                    let conversation = self.fetch_conversation(
-                        repo,
-                        ConversationSeed {
-                            id: issue.iid,
-                            title: issue.title,
-                            state: issue.state,
-                            body: issue.description,
-                            is_pr: false,
-                            web_url: issue.web_url,
-                        },
-                        req,
-                    )?;
+                if let Some(issue) = self
+                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())
+                    .await?
+                {
+                    let conversation = self
+                        .fetch_conversation(
+                            repo,
+                            ConversationSeed {
+                                id: issue.iid,
+                                title: issue.title,
+                                state: issue.state,
+                                body: issue.description,
+                                is_pr: false,
+                                web_url: issue.web_url,
+                            },
+                            req,
+                        )
+                        .await?;
                     emit(conversation)?;
                     return Ok(1);
                 }
 
                 if allow_fallback_to_pr
-                    && let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())?
+                    && let Some(mr) = self
+                        .fetch_mr_by_iid(repo, iid, req.token.as_deref())
+                        .await?
                 {
                     warn!(
                         "Warning: --id defaulted to issue, but found MR !{iid}; use --type pr for clarity."
                     );
-                    let conversation = self.fetch_conversation(
-                        repo,
-                        ConversationSeed {
-                            id: mr.iid,
-                            title: mr.title,
-                            state: mr.state,
-                            body: mr.description,
-                            is_pr: true,
-                            web_url: mr.web_url,
-                        },
-                        req,
-                    )?;
+                    let conversation = self
+                        .fetch_conversation(
+                            repo,
+                            ConversationSeed {
+                                id: mr.iid,
+                                title: mr.title,
+                                state: mr.state,
+                                body: mr.description,
+                                is_pr: true,
+                                web_url: mr.web_url,
+                            },
+                            req,
+                        )
+                        .await?;
                     emit(conversation)?;
                     return Ok(1);
                 }
@@ -179,25 +199,31 @@ impl GitLabSource {
                 Err(AppError::not_found(format!("Issue #{iid} not found in repo {repo}.")).into())
             }
             ContentKind::Pr => {
-                if let Some(mr) = self.fetch_mr_by_iid(repo, iid, req.token.as_deref())? {
-                    let conversation = self.fetch_conversation(
-                        repo,
-                        ConversationSeed {
-                            id: mr.iid,
-                            title: mr.title,
-                            state: mr.state,
-                            body: mr.description,
-                            is_pr: true,
-                            web_url: mr.web_url,
-                        },
-                        req,
-                    )?;
+                if let Some(mr) = self
+                    .fetch_mr_by_iid(repo, iid, req.token.as_deref())
+                    .await?
+                {
+                    let conversation = self
+                        .fetch_conversation(
+                            repo,
+                            ConversationSeed {
+                                id: mr.iid,
+                                title: mr.title,
+                                state: mr.state,
+                                body: mr.description,
+                                is_pr: true,
+                                web_url: mr.web_url,
+                            },
+                            req,
+                        )
+                        .await?;
                     emit(conversation)?;
                     return Ok(1);
                 }
 
                 if self
-                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())?
+                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())
+                    .await?
                     .is_some()
                 {
                     return Err(AppError::usage(format!(
@@ -222,14 +248,17 @@ impl Source for GitLabSource {
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        block_in_place(|| match &req.target {
-            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit),
+        match &req.target {
+            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
             FetchTarget::Id {
                 repo,
                 id,
                 kind,
                 allow_fallback_to_pr,
-            } => self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit),
-        })
+            } => {
+                self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit)
+                    .await
+            }
+        }
     }
 }

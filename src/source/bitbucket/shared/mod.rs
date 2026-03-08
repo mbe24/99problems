@@ -2,4 +2,4 @@ mod auth;
 mod http;
 
 pub(super) use auth::apply_auth;
-pub(super) use http::{parse_bitbucket_json, send};
+pub(super) use http::{decode_bitbucket_json, execute_request};

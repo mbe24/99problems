@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::blocking::Client;
-use tokio::task::block_in_place;
+use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
 use tracing::debug_span;
 
 use super::{FetchRequest, Source};
@@ -36,7 +35,7 @@ impl BitbucketDeployment {
 }
 
 pub struct BitbucketSource {
-    pub(super) client: Client,
+    pub(super) client: ClientWithMiddleware,
     deployment: BitbucketDeployment,
     pub(super) base_url: String,
 }
@@ -48,7 +47,11 @@ impl BitbucketSource {
     ///
     /// Returns an error if deployment is missing/invalid or the HTTP client
     /// cannot be constructed.
-    pub fn new(platform_url: Option<String>, deployment: Option<String>) -> Result<Self> {
+    pub fn new(
+        platform_url: Option<String>,
+        deployment: Option<String>,
+        telemetry_active: bool,
+    ) -> Result<Self> {
         let deployment = deployment.ok_or_else(|| {
             AppError::usage(
                 "Bitbucket deployment is required. Set [instances.<alias>].deployment or pass --deployment (cloud|selfhosted).",
@@ -67,15 +70,33 @@ impl BitbucketSource {
                 .to_string(),
         };
 
-        let client = Client::builder()
+        let http_client = reqwest::Client::builder()
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
+        let client = Self::build_client(http_client, telemetry_active);
 
         Ok(Self {
             client,
             deployment,
             base_url,
         })
+    }
+
+    #[cfg(feature = "telemetry-otel")]
+    fn build_client(http_client: reqwest::Client, telemetry_active: bool) -> ClientWithMiddleware {
+        let builder = MiddlewareClientBuilder::new(http_client);
+        if telemetry_active {
+            builder
+                .with(reqwest_tracing::TracingMiddleware::default())
+                .build()
+        } else {
+            builder.build()
+        }
+    }
+
+    #[cfg(not(feature = "telemetry-otel"))]
+    fn build_client(http_client: reqwest::Client, _telemetry_active: bool) -> ClientWithMiddleware {
+        MiddlewareClientBuilder::new(http_client).build()
     }
 }
 
@@ -86,12 +107,10 @@ impl Source for BitbucketSource {
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        block_in_place(|| {
-            let _span = debug_span!("bitbucket.fetch_stream").entered();
-            match self.deployment {
-                BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit),
-                BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit),
-            }
-        })
+        let _span = debug_span!("bitbucket.fetch_stream").entered();
+        match self.deployment {
+            BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit).await,
+            BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit).await,
+        }
     }
 }
