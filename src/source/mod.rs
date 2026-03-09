@@ -64,6 +64,7 @@ pub struct FetchRequest {
     pub per_page: u32,
     pub token: Option<String>,
     pub account_email: Option<String>,
+    pub include_body: bool,
     pub include_comments: bool,
     pub include_review_comments: bool,
     pub include_links: bool,

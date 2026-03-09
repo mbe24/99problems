@@ -204,11 +204,15 @@ impl JiraSource {
                 id: issue_key,
                 title: fields.summary,
                 state: fields.status.name,
-                body: fields
-                    .description
-                    .as_ref()
-                    .map(extract_adf_text)
-                    .filter(|s| !s.is_empty()),
+                body: if req.include_body {
+                    fields
+                        .description
+                        .as_ref()
+                        .map(extract_adf_text)
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                },
                 comments,
                 metadata,
             })
@@ -219,14 +223,20 @@ impl JiraSource {
 
     async fn fetch_issue_body(&self, id_or_key: &str, req: &FetchRequest) -> Result<JiraIssueItem> {
         async {
-            let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
+            let mut fields = vec!["summary", "status"];
+            if req.include_body {
+                fields.push("description");
+            }
+            if req.include_links {
+                fields.extend(["parent", "subtasks", "issuelinks", "attachment"]);
+            }
             let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
             let http = Self::apply_auth(
                 self.client.get(&url),
                 req.token.as_deref(),
                 req.account_email.as_deref(),
             )
-            .query(&[("fields", fields)]);
+            .query(&[("fields", fields.join(","))]);
             let payload = Self::execute_request(http, "issue fetch").await?;
             if payload.status == StatusCode::NOT_FOUND {
                 let auth_hint = if req.token.is_some() {

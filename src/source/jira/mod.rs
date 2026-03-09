@@ -140,7 +140,14 @@ impl JiraSource {
                 "fetching Jira search page"
             );
 
-            let query_params = search_query_params(jql, per_page, start_at, next_page_token);
+            let query_params = search_query_params(
+                jql,
+                per_page,
+                start_at,
+                next_page_token,
+                req.include_body,
+                req.include_links,
+            );
             let http = Self::apply_auth(
                 self.client.get(&url),
                 req.token.as_deref(),
@@ -193,11 +200,15 @@ impl JiraSource {
             id: issue_key,
             title: fields.summary,
             state: fields.status.name,
-            body: fields
-                .description
-                .as_ref()
-                .map(extract_adf_text)
-                .filter(|s| !s.is_empty()),
+            body: if req.include_body {
+                fields
+                    .description
+                    .as_ref()
+                    .map(extract_adf_text)
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            },
             comments,
             metadata,
         })
@@ -209,14 +220,20 @@ fn search_query_params(
     per_page: u32,
     start_at: u32,
     next_page_token: Option<&str>,
+    include_body: bool,
+    include_links: bool,
 ) -> Vec<(String, String)> {
+    let mut fields = vec!["summary", "status"];
+    if include_body {
+        fields.push("description");
+    }
+    if include_links {
+        fields.extend(["parent", "subtasks", "issuelinks", "attachment"]);
+    }
     let mut query_params = vec![
         ("jql".to_string(), jql.to_string()),
         ("maxResults".to_string(), per_page.to_string()),
-        (
-            "fields".to_string(),
-            "summary,description,status,parent,subtasks,issuelinks,attachment".to_string(),
-        ),
+        ("fields".to_string(), fields.join(",")),
     ];
     if let Some(token) = next_page_token {
         query_params.push(("nextPageToken".to_string(), token.to_string()));
@@ -246,5 +263,34 @@ impl Source for JiraSource {
                 Ok(1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_query_params;
+
+    #[test]
+    fn search_query_params_include_description_when_body_enabled() {
+        let params = search_query_params("project = \"CPQ\"", 50, 0, None, true, true);
+        let fields = params
+            .iter()
+            .find_map(|(k, v)| (k == "fields").then_some(v.as_str()))
+            .unwrap_or_default();
+        assert!(fields.contains("description"));
+        assert!(fields.contains("parent"));
+    }
+
+    #[test]
+    fn search_query_params_omit_description_when_body_disabled() {
+        let params = search_query_params("project = \"CPQ\"", 50, 0, None, false, false);
+        let fields = params
+            .iter()
+            .find_map(|(k, v)| (k == "fields").then_some(v.as_str()))
+            .unwrap_or_default();
+        assert!(!fields.contains("description"));
+        assert!(!fields.contains("parent"));
+        assert!(fields.contains("summary"));
+        assert!(fields.contains("status"));
     }
 }
