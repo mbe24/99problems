@@ -204,6 +204,10 @@ pub(crate) struct GetArgs {
     #[arg(short = 'R', long)]
     pub(crate) include_review_comments: bool,
 
+    /// Skip fetching issue/PR body text (currently supported for Jira only)
+    #[arg(long)]
+    pub(crate) no_body: bool,
+
     /// Skip fetching comments (faster, smaller output)
     #[arg(long)]
     pub(crate) no_comments: bool,
@@ -295,6 +299,7 @@ async fn run_get_pipeline(
     debug!(
         platform = %cfg.platform,
         kind = %cfg.kind,
+        include_body = !args.no_body,
         include_comments = !args.no_comments,
         include_review_comments = args.include_review_comments,
         include_links = !args.no_links,
@@ -468,6 +473,13 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     if args.no_comments && args.include_review_comments {
         warn!("Warning: --include-review-comments is ignored when --no-comments is set.");
     }
+    if args.no_body && cfg.platform != "jira" {
+        return Err(AppError::provider(
+            "--no-body is currently supported only for Jira (fetch-level optimization).",
+        )
+        .with_hint("Remove --no-body for this provider.")
+        .into());
+    }
     if cfg.platform == "jira" && cfg.kind == "pr" {
         return Err(AppError::usage(
             "Platform 'jira' does not support pull requests. Use --type issue.",
@@ -538,6 +550,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
             per_page: cfg.per_page,
             token: cfg.token.clone(),
             account_email: cfg.account_email.clone(),
+            include_body: !args.no_body,
             include_comments: !args.no_comments,
             include_review_comments: args.include_review_comments,
             include_links: !args.no_links,
@@ -570,6 +583,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
         per_page: query.per_page,
         token: query.token,
         account_email: cfg.account_email.clone(),
+        include_body: !args.no_body,
         include_comments: !args.no_comments,
         include_review_comments: args.include_review_comments,
         include_links: !args.no_links,
@@ -795,6 +809,7 @@ mod tests {
             output_mode: None,
             stream: false,
             include_review_comments: false,
+            no_body: false,
             no_comments: false,
             no_links: false,
             output: None,
@@ -920,6 +935,27 @@ mod tests {
         args.no_links = true;
         let req = build_fetch_request(&cfg, &args).unwrap();
         assert!(!req.include_links);
+    }
+
+    #[test]
+    fn build_fetch_request_respects_no_body_flag() {
+        let cfg = config_with_platform("jira", None);
+        let mut args = args();
+        args.id = None;
+        args.no_body = true;
+        args.repo = Some("CPQ".into());
+        args.query = Some("architectural".into());
+        let req = build_fetch_request(&cfg, &args).unwrap();
+        assert!(!req.include_body);
+    }
+
+    #[test]
+    fn no_body_is_rejected_for_non_jira() {
+        let cfg = config_with_platform("github", None);
+        let mut args = args();
+        args.no_body = true;
+        let err = emit_get_warnings(&cfg, &args).unwrap_err().to_string();
+        assert!(err.contains("supported only for Jira"));
     }
 
     #[test]
