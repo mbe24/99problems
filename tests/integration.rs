@@ -183,7 +183,7 @@ mod tests {
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_2402_default_issue_comments_only() {
         let source = GitHubSource::new(false).unwrap();
-        let req = req_id("github/gitignore", "2402", false);
+        let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Pr);
         let conv = fetch_all(&source, &req)
             .unwrap()
             .into_iter()
@@ -206,7 +206,8 @@ mod tests {
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_2402_with_review_comments() {
         let source = GitHubSource::new(false).unwrap();
-        let req = req_id("github/gitignore", "2402", true);
+        let mut req = req_id_with_kind("github/gitignore", "2402", ContentKind::Pr);
+        req.include_review_comments = true;
         let conv = fetch_all(&source, &req)
             .unwrap()
             .into_iter()

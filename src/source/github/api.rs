@@ -628,7 +628,7 @@ impl GitHubSource {
     ) -> Result<()> {
         match kind {
             ContentKind::Issue if is_pr => Err(AppError::usage(format!(
-                "ID {issue_id} in repo {repo} is a pull request. Use --type pr or omit --type."
+                "ID {issue_id} in repo {repo} is a pull request. Use --type pr."
             ))
             .into()),
             ContentKind::Pr if !is_pr => Err(AppError::usage(format!(
