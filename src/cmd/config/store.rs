@@ -60,6 +60,13 @@ pub(crate) fn list_entries(cfg: &DotfileConfig) -> Vec<(String, String, bool)> {
                 false,
             ));
         }
+        if let Some(exclude_targets) = telemetry.exclude_targets.as_ref() {
+            entries.push((
+                "telemetry.exclude_targets".to_string(),
+                exclude_targets.join(","),
+                false,
+            ));
+        }
     }
     if let Some(default_instance) = cfg.default_instance.as_ref() {
         entries.push((
@@ -128,6 +135,10 @@ pub(crate) fn get_key_value(cfg: &DotfileConfig, key: &ConfigKey) -> Option<Stri
             .telemetry
             .as_ref()
             .and_then(|telemetry| telemetry.otlp_endpoint.clone()),
+        ConfigKey::TelemetryExcludeTargets => cfg
+            .telemetry
+            .as_ref()
+            .and_then(|telemetry| telemetry.exclude_targets.as_ref().map(|v| v.join(","))),
         ConfigKey::InstanceField { alias, field } => {
             let inst = cfg.instances.get(alias)?;
             match field {
@@ -221,7 +232,10 @@ fn validate_telemetry_keys(table: &toml::value::Table) -> Result<()> {
         .as_table()
         .ok_or_else(|| anyhow!("Invalid .99problems: 'telemetry' must be a TOML table."))?;
     for key in telemetry_table.keys() {
-        if !matches!(key.as_str(), "enabled" | "otlp_endpoint") {
+        if !matches!(
+            key.as_str(),
+            "enabled" | "otlp_endpoint" | "exclude_targets"
+        ) {
             return Err(anyhow!("Unsupported key 'telemetry.{key}' in .99problems."));
         }
     }
@@ -328,6 +342,7 @@ fn merge_telemetry(
         (Some(base), Some(override_cfg)) => Some(TelemetrySection {
             enabled: override_cfg.enabled.or(base.enabled),
             otlp_endpoint: override_cfg.otlp_endpoint.or(base.otlp_endpoint),
+            exclude_targets: override_cfg.exclude_targets.or(base.exclude_targets),
         }),
     }
 }
@@ -388,6 +403,12 @@ mod tests {
             telemetry: Some(TelemetrySection {
                 enabled: Some(true),
                 otlp_endpoint: Some("http://localhost:4318/v1/traces".to_string()),
+                exclude_targets: Some(vec![
+                    "h2".to_string(),
+                    "hyper".to_string(),
+                    "hyper_util".to_string(),
+                    "rustls".to_string(),
+                ]),
             }),
             instances: HashMap::new(),
         };
@@ -395,5 +416,7 @@ mod tests {
         assert_eq!(entries[0].0, "telemetry.enabled");
         assert_eq!(entries[0].1, "true");
         assert_eq!(entries[1].0, "telemetry.otlp_endpoint");
+        assert_eq!(entries[2].0, "telemetry.exclude_targets");
+        assert_eq!(entries[2].1, "h2,hyper,hyper_util,rustls");
     }
 }

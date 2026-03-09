@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::cmd::config::key::{ConfigKey, InstanceField};
 use crate::cmd::config::store::{WriteScope, path_for_write_scope};
@@ -29,6 +29,14 @@ pub(crate) fn set(scope: WriteScope, key: &ConfigKey, raw_value: &str) -> Result
         }
         ConfigKey::TelemetryOtlpEndpoint => {
             doc["telemetry"]["otlp_endpoint"] = value(raw_value);
+        }
+        ConfigKey::TelemetryExcludeTargets => {
+            let exclude_targets = parse_csv_targets(raw_value)?;
+            let mut array = Array::new();
+            for target in exclude_targets {
+                array.push(target.as_str());
+            }
+            doc["telemetry"]["exclude_targets"] = Item::Value(array.into());
         }
         ConfigKey::InstanceField { alias, field } => {
             let instances_item = doc.entry("instances").or_insert(Item::Table(Table::new()));
@@ -85,6 +93,9 @@ pub(crate) fn unset(scope: WriteScope, key: &ConfigKey) -> Result<()> {
         ConfigKey::TelemetryOtlpEndpoint => {
             remove_telemetry_field(&mut doc, "otlp_endpoint");
         }
+        ConfigKey::TelemetryExcludeTargets => {
+            remove_telemetry_field(&mut doc, "exclude_targets");
+        }
         ConfigKey::InstanceField { alias, field } => {
             if let Some(instances_table) = doc.get_mut("instances").and_then(Item::as_table_mut) {
                 if let Some(instance_item) = instances_table.get_mut(alias)
@@ -115,6 +126,9 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
         ConfigKey::DefaultInstance | ConfigKey::TelemetryOtlpEndpoint => {}
         ConfigKey::TelemetryEnabled => {
             let _ = raw_value.parse::<bool>()?;
+        }
+        ConfigKey::TelemetryExcludeTargets => {
+            let _ = parse_csv_targets(raw_value)?;
         }
         ConfigKey::InstanceField { field, .. } => match field {
             InstanceField::Platform => match raw_value {
@@ -152,6 +166,25 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_csv_targets(raw_value: &str) -> Result<Vec<String>> {
+    let mut targets = Vec::new();
+    for part in raw_value.split(',') {
+        let target = part.trim();
+        if target.is_empty() {
+            return Err(anyhow!(
+                "telemetry.exclude_targets must be a comma-separated list of non-empty prefixes."
+            ));
+        }
+        targets.push(target.to_string());
+    }
+    if targets.is_empty() {
+        return Err(anyhow!(
+            "telemetry.exclude_targets must include at least one prefix."
+        ));
+    }
+    Ok(targets)
 }
 
 fn remove_telemetry_field(doc: &mut DocumentMut, field: &str) {

@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub const DEFAULT_TELEMETRY_EXCLUDE_TARGETS: [&str; 4] = ["h2", "hyper", "hyper_util", "rustls"];
+
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct InstanceConfig {
     pub platform: Option<String>,
@@ -21,6 +23,7 @@ pub struct InstanceConfig {
 pub struct TelemetrySection {
     pub enabled: Option<bool>,
     pub otlp_endpoint: Option<String>,
+    pub exclude_targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -35,6 +38,7 @@ pub struct DotfileConfig {
 pub struct TelemetryConfig {
     pub enabled: bool,
     pub otlp_endpoint: Option<String>,
+    pub exclude_targets: Vec<String>,
 }
 
 impl TelemetryConfig {
@@ -174,6 +178,7 @@ fn merge_telemetry(
         (Some(base), Some(override_cfg)) => Some(TelemetrySection {
             enabled: override_cfg.enabled.or(base.enabled),
             otlp_endpoint: override_cfg.otlp_endpoint.or(base.otlp_endpoint),
+            exclude_targets: override_cfg.exclude_targets.or(base.exclude_targets),
         }),
     }
 }
@@ -185,7 +190,28 @@ fn resolve_telemetry_config(home: DotfileConfig, local: DotfileConfig) -> Teleme
     TelemetryConfig {
         enabled: telemetry.enabled.unwrap_or(false),
         otlp_endpoint: telemetry.otlp_endpoint,
+        exclude_targets: telemetry.exclude_targets.map_or_else(
+            default_telemetry_exclude_targets,
+            normalize_telemetry_targets,
+        ),
     }
+}
+
+#[must_use]
+fn default_telemetry_exclude_targets() -> Vec<String> {
+    DEFAULT_TELEMETRY_EXCLUDE_TARGETS
+        .iter()
+        .map(|target| (*target).to_string())
+        .collect()
+}
+
+#[must_use]
+fn normalize_telemetry_targets(targets: Vec<String>) -> Vec<String> {
+    targets
+        .into_iter()
+        .map(|target| target.trim().to_string())
+        .filter(|target| !target.is_empty())
+        .collect()
 }
 
 fn resolve_from_dotfiles(
@@ -436,7 +462,10 @@ fn validate_telemetry_keys(table: &toml::value::Table) -> Result<()> {
         .as_table()
         .ok_or_else(|| anyhow!("Invalid .99problems: 'telemetry' must be a TOML table."))?;
     for key in telemetry_table.keys() {
-        if !matches!(key.as_str(), "enabled" | "otlp_endpoint") {
+        if !matches!(
+            key.as_str(),
+            "enabled" | "otlp_endpoint" | "exclude_targets"
+        ) {
             return Err(anyhow!("Unsupported key 'telemetry.{key}' in .99problems."));
         }
     }
@@ -796,14 +825,16 @@ mod tests {
             [telemetry]
             enabled = false
             otlp_endpoint = "http://home:4318/v1/traces"
+            exclude_targets = ["h2", "hyper"]
             "#,
         )
         .unwrap();
         let local = parse_dotfile_content(
-            r"
+            r#"
             [telemetry]
             enabled = true
-            ",
+            exclude_targets = ["reqwest"]
+            "#,
         )
         .unwrap();
 
@@ -813,6 +844,18 @@ mod tests {
             telemetry.otlp_endpoint.as_deref(),
             Some("http://home:4318/v1/traces")
         );
+        assert_eq!(telemetry.exclude_targets, vec!["reqwest".to_string()]);
+    }
+
+    #[test]
+    fn telemetry_uses_default_exclude_targets_when_unset() {
+        let telemetry =
+            resolve_telemetry_config(DotfileConfig::default(), DotfileConfig::default());
+        let expected: Vec<String> = DEFAULT_TELEMETRY_EXCLUDE_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(telemetry.exclude_targets, expected);
     }
 
     #[test]

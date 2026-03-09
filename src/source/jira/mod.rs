@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
-use tracing::{debug, debug_span, trace};
+use tracing::{Instrument, debug, debug_span, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::AppError;
@@ -34,6 +34,10 @@ impl JiraSource {
             .user_agent(concat!("99problems-cli/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let client = Self::build_client(http_client, telemetry_active);
+        trace!(
+            telemetry_active,
+            "initialized Jira HTTP client (reqwest HTTP/2 enabled; protocol is negotiated at runtime)"
+        );
         let base_url = base_url
             .unwrap_or_else(|| JIRA_DEFAULT_BASE_URL.to_string())
             .trim_end_matches('/')
@@ -121,37 +125,42 @@ impl JiraSource {
         start_at: u32,
         next_page_token: Option<&str>,
     ) -> Result<JiraSearchResponse> {
-        let _page_span = debug_span!(
+        let page_span = debug_span!(
             "jira.search.page",
             start_at,
             per_page,
             has_next_page_token = next_page_token.is_some()
-        )
-        .entered();
-        let url = format!("{}/rest/api/3/search/jql", self.base_url);
-        debug!(
-            start_at,
-            per_page,
-            has_next_page_token = next_page_token.is_some(),
-            "fetching Jira search page"
         );
+        let payload = async {
+            let url = format!("{}/rest/api/3/search/jql", self.base_url);
+            debug!(
+                start_at,
+                per_page,
+                has_next_page_token = next_page_token.is_some(),
+                "fetching Jira search page"
+            );
 
-        let query_params = search_query_params(jql, per_page, start_at, next_page_token);
-        let http = Self::apply_auth(
-            self.client.get(&url),
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-        )
-        .query(&query_params);
-        let payload = Self::execute_request(http, "search").await?;
+            let query_params = search_query_params(jql, per_page, start_at, next_page_token);
+            let http = Self::apply_auth(
+                self.client.get(&url),
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+            )
+            .query(&query_params);
+            Self::execute_request(http, "search").await
+        }
+        .instrument(page_span)
+        .await?;
 
-        let _decode_span = debug_span!("jira.search.decode", operation = "search").entered();
-        Self::decode_jira_json(
-            &payload,
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-            "search",
-        )
+        let decode_span = debug_span!("jira.search.decode", operation = "search");
+        decode_span.in_scope(|| {
+            Self::decode_jira_json(
+                &payload,
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+                "search",
+            )
+        })
     }
 
     async fn build_search_conversation(
@@ -159,22 +168,29 @@ impl JiraSource {
         req: &FetchRequest,
         issue: JiraIssueItem,
     ) -> Result<Conversation> {
+        let issue_key = issue.key;
         let fields = issue.fields;
-        let comments = if req.include_comments {
-            let _comments_span = debug_span!("jira.search.hydrate.comments").entered();
-            self.fetch_comments(&issue.key, req).await?
-        } else {
-            vec![]
-        };
-        let metadata = if req.include_links {
-            let _links_span = debug_span!("jira.search.hydrate.links").entered();
-            self.fetch_metadata(&issue.key, fields.clone(), req).await
-        } else {
-            ConversationMetadata::empty()
-        };
+        let comments_task = async {
+            if req.include_comments {
+                self.fetch_comments(&issue_key, req).await
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        .instrument(debug_span!("jira.search.hydrate.comments"));
+        let metadata_task = async {
+            if req.include_links {
+                self.fetch_metadata(&issue_key, fields.clone(), req).await
+            } else {
+                ConversationMetadata::empty()
+            }
+        }
+        .instrument(debug_span!("jira.search.hydrate.links"));
+        let (comments_result, metadata) = tokio::join!(comments_task, metadata_task);
+        let comments = comments_result?;
 
         Ok(Conversation {
-            id: issue.key,
+            id: issue_key,
             title: fields.summary,
             state: fields.status.name,
             body: fields

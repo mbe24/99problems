@@ -212,6 +212,10 @@ mod tests {
             ConfigKey::TelemetryEnabled
         ));
         assert!(matches!(
+            ConfigKey::parse("telemetry.exclude_targets").unwrap(),
+            ConfigKey::TelemetryExcludeTargets
+        ));
+        assert!(matches!(
             ConfigKey::parse("instances.work.platform").unwrap(),
             ConfigKey::InstanceField {
                 alias,
