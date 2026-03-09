@@ -5,6 +5,7 @@ pub(crate) enum ConfigKey {
     DefaultInstance,
     TelemetryEnabled,
     TelemetryOtlpEndpoint,
+    TelemetryExcludeTargets,
     InstanceField { alias: String, field: InstanceField },
 }
 
@@ -54,11 +55,14 @@ impl ConfigKey {
         if trimmed == "telemetry.otlp_endpoint" {
             return Ok(Self::TelemetryOtlpEndpoint);
         }
+        if trimmed == "telemetry.exclude_targets" {
+            return Ok(Self::TelemetryExcludeTargets);
+        }
 
         let parts: Vec<&str> = trimmed.split('.').collect();
         if parts.len() != 3 || parts.first() != Some(&"instances") {
             return Err(anyhow!(
-                "Invalid key path '{raw}'. Use 'default_instance', 'telemetry.enabled', 'telemetry.otlp_endpoint', or 'instances.<alias>.<field>'."
+                "Invalid key path '{raw}'. Use 'default_instance', 'telemetry.enabled', 'telemetry.otlp_endpoint', 'telemetry.exclude_targets', or 'instances.<alias>.<field>'."
             ));
         }
         let alias = parts[1].trim();
@@ -123,6 +127,10 @@ mod tests {
         assert_eq!(
             ConfigKey::parse("telemetry.otlp_endpoint").unwrap(),
             ConfigKey::TelemetryOtlpEndpoint
+        );
+        assert_eq!(
+            ConfigKey::parse("telemetry.exclude_targets").unwrap(),
+            ConfigKey::TelemetryExcludeTargets
         );
     }
 

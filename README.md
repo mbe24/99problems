@@ -127,9 +127,16 @@ Telemetry (testing-first, config-activated):
 [telemetry]
 enabled = true
 otlp_endpoint = "http://localhost:4318/v1/traces"
+exclude_targets = ["h2", "hyper", "hyper_util", "rustls"]
 ```
 
 Telemetry is best-effort and traces `99problems get` without changing normal command behavior or exit codes.
+Use `telemetry.exclude_targets` to suppress noisy span-target prefixes (prefix match).
+Equivalent config command:
+
+```bash
+99problems config set telemetry.exclude_targets h2,hyper,hyper_util,rustls
+```
 
 Build-time feature:
 - `telemetry-otel` controls whether OTEL support is compiled in.

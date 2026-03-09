@@ -53,16 +53,11 @@ pub fn init(
             Ok((runtime, provider)) => {
                 let tracer = provider.tracer("99problems");
                 let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-                let otel_filter = tracing_subscriber::filter::filter_fn(|metadata| {
-                    let target = metadata.target();
-                    target == "99problems"
-                        || target.starts_with("99problems::")
-                        || target.starts_with("reqwest")
-                        || target.starts_with("reqwest_tracing")
-                        || target.starts_with("hyper")
-                        || target.starts_with("hyper_util")
-                        || target.starts_with("h2")
-                        || target.starts_with("rustls")
+                let excluded_targets = cfg.exclude_targets.clone();
+                // Keep export broad for future app spans, while suppressing known transport
+                // internals that can surface as noisy root traces.
+                let otel_filter = tracing_subscriber::filter::filter_fn(move |metadata| {
+                    !is_filtered_transport_target(metadata.target(), &excluded_targets)
                 });
                 tracing_subscriber::registry()
                     .with(
@@ -186,6 +181,13 @@ fn export_timeout_ms() -> u64 {
         .unwrap_or(1_000)
 }
 
+#[cfg(feature = "telemetry-otel")]
+fn is_filtered_transport_target(target: &str, excluded_targets: &[String]) -> bool {
+    excluded_targets
+        .iter()
+        .any(|prefix| !prefix.is_empty() && target.starts_with(prefix))
+}
+
 #[must_use]
 fn level_from_flags(verbose: u8, quiet: bool) -> LevelFilter {
     if quiet {
@@ -217,5 +219,59 @@ mod tests {
     fn quiet_overrides_verbose() {
         assert_eq!(level_from_flags(0, true), LevelFilter::ERROR);
         assert_eq!(level_from_flags(3, true), LevelFilter::ERROR);
+    }
+
+    #[cfg(feature = "telemetry-otel")]
+    #[test]
+    fn transport_targets_are_filtered_and_app_targets_are_kept() {
+        let excluded_targets = vec![
+            "h2".to_string(),
+            "hyper".to_string(),
+            "hyper_util".to_string(),
+            "rustls".to_string(),
+        ];
+        assert!(is_filtered_transport_target(
+            "h2::proto::connection",
+            &excluded_targets
+        ));
+        assert!(is_filtered_transport_target(
+            "hyper::client::pool",
+            &excluded_targets
+        ));
+        assert!(is_filtered_transport_target(
+            "hyper_util::client::legacy::pool",
+            &excluded_targets
+        ));
+        assert!(is_filtered_transport_target(
+            "rustls::client::hs",
+            &excluded_targets
+        ));
+
+        assert!(!is_filtered_transport_target(
+            "99problems::cmd::get",
+            &excluded_targets
+        ));
+        assert!(!is_filtered_transport_target(
+            "problems99::source::jira::api",
+            &excluded_targets
+        ));
+        assert!(!is_filtered_transport_target(
+            "reqwest::retry",
+            &excluded_targets
+        ));
+        assert!(!is_filtered_transport_target(
+            "reqwest_tracing::middleware",
+            &excluded_targets
+        ));
+    }
+
+    #[cfg(feature = "telemetry-otel")]
+    #[test]
+    fn empty_exclude_targets_keep_everything() {
+        let excluded_targets = Vec::new();
+        assert!(!is_filtered_transport_target(
+            "hyper::client::pool",
+            &excluded_targets
+        ));
     }
 }

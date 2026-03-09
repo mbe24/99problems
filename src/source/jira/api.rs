@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use reqwest_middleware::RequestBuilder;
 use serde::de::DeserializeOwned;
-use tracing::{debug, debug_span, trace, warn};
+use tracing::{Instrument, debug, debug_span, trace, warn};
 
 use super::model::{
     JiraCommentsPage, JiraIssueFields, JiraIssueItem, JiraKeySearchResponse, JiraRemoteLinkItem,
@@ -12,7 +12,7 @@ use super::model::{
 };
 use super::{JiraSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
-use crate::model::{Comment, Conversation, ConversationMetadata};
+use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
 use crate::source::FetchRequest;
 
 pub(super) struct JiraHttpPayload {
@@ -92,28 +92,31 @@ impl JiraSource {
             error.type = tracing::field::Empty,
             error.message = tracing::field::Empty
         );
-        let _exchange_guard = exchange_span.enter();
-        let response = {
-            let _request_span = debug_span!("jira.http.request", operation = operation).entered();
-            Self::apply_otel_span_name(req).send().await
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(err) => {
-                let (mapped, error_type, error_message) = Self::map_request_error(operation, err);
-                exchange_span.record("error.type", error_type);
-                exchange_span.record("error.message", error_message.as_str());
-                return Err(mapped.into());
-            }
-        };
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body = {
+        let exchange_span_for_record = exchange_span.clone();
+        async move {
+            let request_span = debug_span!("jira.http.request", operation = operation);
+            let response = Self::apply_otel_span_name(req)
+                .send()
+                .instrument(request_span)
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(err) => {
+                    let (mapped, error_type, error_message) =
+                        Self::map_request_error(operation, err);
+                    exchange_span_for_record.record("error.type", error_type);
+                    exchange_span_for_record.record("error.message", error_message.as_str());
+                    return Err(mapped.into());
+                }
+            };
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
             let read_span = debug_span!(
                 "jira.http.response.read",
                 operation = operation,
@@ -121,27 +124,29 @@ impl JiraSource {
                 error.type = tracing::field::Empty,
                 error.message = tracing::field::Empty
             );
-            let _read_guard = read_span.enter();
             read_span.record("status_code", i64::from(status.as_u16()));
-            match response.text().await {
+            let body = match response.text().instrument(read_span.clone()).await {
                 Ok(body) => body,
                 Err(err) => {
                     let error_message = err.to_string();
                     read_span.record("error.type", "response_read_error");
                     read_span.record("error.message", error_message.as_str());
-                    exchange_span.record("error.type", "response_read_error");
-                    exchange_span.record("error.message", error_message.as_str());
+                    exchange_span_for_record.record("error.type", "response_read_error");
+                    exchange_span_for_record.record("error.message", error_message.as_str());
                     return Err(app_error_from_reqwest("Jira", operation, &err).into());
                 }
-            }
-        };
-        exchange_span.record("status_code", i64::from(status.as_u16()));
-        exchange_span.record("body_bytes", usize_to_i64(body.len()));
-        Ok(JiraHttpPayload {
-            status,
-            content_type,
-            body,
-        })
+            };
+
+            exchange_span_for_record.record("status_code", i64::from(status.as_u16()));
+            exchange_span_for_record.record("body_bytes", usize_to_i64(body.len()));
+            Ok(JiraHttpPayload {
+                status,
+                content_type,
+                body,
+            })
+        }
+        .instrument(exchange_span)
+        .await
     }
 
     pub(super) async fn fetch_issue(
@@ -149,82 +154,130 @@ impl JiraSource {
         id_or_key: &str,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let _span = debug_span!("jira.hydrate.issue").entered();
-        let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
-        let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
-        let http = Self::apply_auth(
-            self.client.get(&url),
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-        )
-        .query(&[("fields", fields)]);
-        let payload = Self::execute_request(http, "issue fetch").await?;
-        if payload.status == StatusCode::NOT_FOUND {
-            let auth_hint = if req.token.is_some() {
-                if req.account_email.is_none() {
-                    " Check Jira permissions or configure account_email for API-token auth."
+        async {
+            let comments_task = async {
+                if req.include_comments {
+                    self.fetch_comments(id_or_key, req).await
                 } else {
-                    " Check Jira permissions for this issue."
+                    Ok(Vec::new())
                 }
-            } else {
-                " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
             };
-            return Err(AppError::not_found(format!(
-                "Jira issue '{}' was not found or is not accessible.{} Response: {}",
-                id_or_key,
-                auth_hint,
-                body_snippet(&payload.body)
-            ))
-            .with_provider("jira")
-            .with_http_status(StatusCode::NOT_FOUND)
-            .into());
+            let remote_links_task = async {
+                if req.include_links {
+                    self.fetch_remote_links(id_or_key, req).await
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+            let child_links_task = async {
+                if !req.include_links {
+                    return Ok(Vec::new());
+                }
+                if !is_canonical_jira_issue_key(id_or_key) {
+                    warn!(
+                        issue_key = id_or_key,
+                        "Skipping Jira child issue lookup; expected canonical issue key format like ABC-123"
+                    );
+                    return Ok(Vec::new());
+                }
+                self.fetch_child_issue_links(id_or_key, req).await
+            };
+            let (issue_result, comments_result, remote_result, child_result) = tokio::join!(
+                self.fetch_issue_body(id_or_key, req),
+                comments_task,
+                remote_links_task,
+                child_links_task
+            );
+
+            let issue: JiraIssueItem = issue_result?;
+            let comments = comments_result?;
+            let issue_key = issue.key;
+            let fields = issue.fields;
+            let metadata = Self::build_issue_metadata(
+                req.include_links,
+                issue_key.as_str(),
+                &fields,
+                remote_result,
+                child_result,
+            );
+            Ok(Conversation {
+                id: issue_key,
+                title: fields.summary,
+                state: fields.status.name,
+                body: fields
+                    .description
+                    .as_ref()
+                    .map(extract_adf_text)
+                    .filter(|s| !s.is_empty()),
+                comments,
+                metadata,
+            })
         }
-        let issue: JiraIssueItem = {
-            let _decode_span =
-                debug_span!("jira.issue.decode", operation = "issue fetch").entered();
-            Self::decode_jira_json(
-                &payload,
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-                "issue fetch",
-            )?
-        };
-        let fields = issue.fields;
-        let comments = if req.include_comments {
-            self.fetch_comments(&issue.key, req).await?
-        } else {
-            vec![]
-        };
-        let metadata = if req.include_links {
-            self.fetch_metadata(&issue.key, fields.clone(), req).await
-        } else {
-            ConversationMetadata::empty()
-        };
-        Ok(Conversation {
-            id: issue.key,
-            title: fields.summary,
-            state: fields.status.name,
-            body: fields
-                .description
-                .as_ref()
-                .map(extract_adf_text)
-                .filter(|s| !s.is_empty()),
-            comments,
-            metadata,
-        })
+        .instrument(debug_span!("jira.hydrate.issue"))
+        .await
     }
 
-    pub(super) async fn fetch_metadata(
-        &self,
+    async fn fetch_issue_body(&self, id_or_key: &str, req: &FetchRequest) -> Result<JiraIssueItem> {
+        async {
+            let fields = "summary,description,status,parent,subtasks,issuelinks,attachment";
+            let url = format!("{}/rest/api/3/issue/{}", self.base_url, id_or_key);
+            let http = Self::apply_auth(
+                self.client.get(&url),
+                req.token.as_deref(),
+                req.account_email.as_deref(),
+            )
+            .query(&[("fields", fields)]);
+            let payload = Self::execute_request(http, "issue fetch").await?;
+            if payload.status == StatusCode::NOT_FOUND {
+                let auth_hint = if req.token.is_some() {
+                    if req.account_email.is_none() {
+                        " Check Jira permissions or configure account_email for API-token auth."
+                    } else {
+                        " Check Jira permissions for this issue."
+                    }
+                } else {
+                    " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
+                };
+                return Err(AppError::not_found(format!(
+                    "Jira issue '{}' was not found or is not accessible.{} Response: {}",
+                    id_or_key,
+                    auth_hint,
+                    body_snippet(&payload.body)
+                ))
+                .with_provider("jira")
+                .with_http_status(StatusCode::NOT_FOUND)
+                .into());
+            }
+            let issue_decode_span = debug_span!("jira.issue.decode", operation = "issue fetch");
+            issue_decode_span.in_scope(|| {
+                Self::decode_jira_json(
+                    &payload,
+                    req.token.as_deref(),
+                    req.account_email.as_deref(),
+                    "issue fetch",
+                )
+            })
+        }
+        .instrument(debug_span!("jira.hydrate.issue_body"))
+        .await
+    }
+
+    fn build_issue_metadata(
+        include_links: bool,
         issue_key: &str,
-        fields: JiraIssueFields,
-        req: &FetchRequest,
+        fields: &JiraIssueFields,
+        remote_result: Result<Vec<ConversationLink>>,
+        child_result: Result<Vec<ConversationLink>>,
     ) -> ConversationMetadata {
-        let _span = debug_span!("jira.hydrate.links").entered();
-        let mut links = map_parent_child_links(&fields);
-        links.extend(map_issue_links(fields.issuelinks));
-        links.extend(map_attachment_links(fields.attachment));
-        match self.fetch_remote_links(issue_key, req).await {
+        if !include_links {
+            return ConversationMetadata::empty();
+        }
+
+        let mut links = map_parent_child_links(fields);
+        links.extend(map_issue_links(fields.issuelinks.clone()));
+        links.extend(map_attachment_links(fields.attachment.clone()));
+
+        match remote_result {
             Ok(remote_links) => links.extend(remote_links),
             Err(err) => {
                 warn!(
@@ -234,7 +287,7 @@ impl JiraSource {
                 );
             }
         }
-        match self.fetch_child_issue_links(issue_key, req).await {
+        match child_result {
             Ok(child_links) => links.extend(child_links),
             Err(err) => {
                 warn!(
@@ -247,6 +300,46 @@ impl JiraSource {
         ConversationMetadata::with_links(links)
     }
 
+    pub(super) async fn fetch_metadata(
+        &self,
+        issue_key: &str,
+        fields: JiraIssueFields,
+        req: &FetchRequest,
+    ) -> ConversationMetadata {
+        async {
+            let mut links = map_parent_child_links(&fields);
+            links.extend(map_issue_links(fields.issuelinks));
+            links.extend(map_attachment_links(fields.attachment));
+            let (remote_result, child_result) = tokio::join!(
+                self.fetch_remote_links(issue_key, req),
+                self.fetch_child_issue_links(issue_key, req)
+            );
+            match remote_result {
+                Ok(remote_links) => links.extend(remote_links),
+                Err(err) => {
+                    warn!(
+                        issue_key,
+                        error = %err,
+                        "Jira remote link fetch failed; continuing without remote links"
+                    );
+                }
+            }
+            match child_result {
+                Ok(child_links) => links.extend(child_links),
+                Err(err) => {
+                    warn!(
+                        issue_key,
+                        error = %err,
+                        "Jira child issue lookup failed; continuing without child issue links"
+                    );
+                }
+            }
+            ConversationMetadata::with_links(links)
+        }
+        .instrument(debug_span!("jira.hydrate.links"))
+        .await
+    }
+
     async fn fetch_remote_links(
         &self,
         issue_key: &str,
@@ -256,27 +349,31 @@ impl JiraSource {
             "jira.links.remote",
             jira.links.remote.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let url = format!("{}/rest/api/3/issue/{issue_key}/remotelink", self.base_url);
-        let http = Self::apply_auth(
-            self.client.get(&url),
-            req.token.as_deref(),
-            req.account_email.as_deref(),
-        );
-        let payload = Self::execute_request(http, "remote link fetch").await?;
-        let items: Vec<JiraRemoteLinkItem> = {
-            let _decode_span =
-                debug_span!("jira.links.remote.decode", operation = "remote link fetch").entered();
-            Self::decode_jira_json(
-                &payload,
+        let span_for_record = span.clone();
+        async {
+            let url = format!("{}/rest/api/3/issue/{issue_key}/remotelink", self.base_url);
+            let http = Self::apply_auth(
+                self.client.get(&url),
                 req.token.as_deref(),
                 req.account_email.as_deref(),
-                "remote link fetch",
-            )?
-        };
-        let links = map_remote_links(items);
-        span.record("jira.links.remote.count", usize_to_i64(links.len()));
-        Ok(links)
+            );
+            let payload = Self::execute_request(http, "remote link fetch").await?;
+            let decode_span =
+                debug_span!("jira.links.remote.decode", operation = "remote link fetch");
+            let items: Vec<JiraRemoteLinkItem> = decode_span.in_scope(|| {
+                Self::decode_jira_json(
+                    &payload,
+                    req.token.as_deref(),
+                    req.account_email.as_deref(),
+                    "remote link fetch",
+                )
+            })?;
+            let links = map_remote_links(items);
+            span_for_record.record("jira.links.remote.count", usize_to_i64(links.len()));
+            Ok(links)
+        }
+        .instrument(span)
+        .await
     }
 
     async fn fetch_child_issue_links(
@@ -288,82 +385,90 @@ impl JiraSource {
             "jira.links.child_search",
             jira.links.child.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let per_page = Self::bounded_per_page(req.per_page);
-        let mut start_at = 0u32;
-        let mut next_page_token: Option<String> = None;
-        let mut links = Vec::new();
-        let jql = format!("parent = {issue_key}");
+        let span_for_record = span.clone();
+        async {
+            let per_page = Self::bounded_per_page(req.per_page);
+            let mut start_at = 0u32;
+            let mut next_page_token: Option<String> = None;
+            let mut links = Vec::new();
+            let jql = format!("parent = {issue_key}");
 
-        loop {
-            let _page_span =
-                debug_span!("jira.links.child_search.page", start_at, per_page).entered();
-            let url = format!("{}/rest/api/3/search/jql", self.base_url);
-            let mut query_params: Vec<(String, String)> = vec![
-                ("jql".into(), jql.clone()),
-                ("maxResults".into(), per_page.to_string()),
-                ("fields".into(), "key".into()),
-            ];
-            if let Some(token) = &next_page_token {
-                query_params.push(("nextPageToken".into(), token.clone()));
-            } else {
-                query_params.push(("startAt".into(), start_at.to_string()));
-            }
+            loop {
+                let page_span = debug_span!("jira.links.child_search.page", start_at, per_page);
+                let payload = async {
+                    let url = format!("{}/rest/api/3/search/jql", self.base_url);
+                    let mut query_params: Vec<(String, String)> = vec![
+                        ("jql".into(), jql.clone()),
+                        ("maxResults".into(), per_page.to_string()),
+                        ("fields".into(), "key".into()),
+                    ];
+                    if let Some(token) = &next_page_token {
+                        query_params.push(("nextPageToken".into(), token.clone()));
+                    } else {
+                        query_params.push(("startAt".into(), start_at.to_string()));
+                    }
 
-            let http = Self::apply_auth(
-                self.client.get(&url),
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-            )
-            .query(&query_params);
-            let payload = Self::execute_request(http, "child issue search").await?;
-            let page: JiraKeySearchResponse = {
-                let _decode_span = debug_span!(
+                    let http = Self::apply_auth(
+                        self.client.get(&url),
+                        req.token.as_deref(),
+                        req.account_email.as_deref(),
+                    )
+                    .query(&query_params);
+                    Self::execute_request(http, "child issue search").await
+                }
+                .instrument(page_span)
+                .await?;
+
+                let decode_span = debug_span!(
                     "jira.links.child_search.decode",
                     operation = "child issue search"
-                )
-                .entered();
-                Self::decode_jira_json(
-                    &payload,
-                    req.token.as_deref(),
-                    req.account_email.as_deref(),
-                    "child issue search",
-                )?
-            };
+                );
+                let page: JiraKeySearchResponse = decode_span.in_scope(|| {
+                    Self::decode_jira_json(
+                        &payload,
+                        req.token.as_deref(),
+                        req.account_email.as_deref(),
+                        "child issue search",
+                    )
+                })?;
 
-            for issue in page.issues {
-                links.push(crate::model::ConversationLink {
-                    id: issue.key,
-                    relation: "child".to_string(),
-                    kind: Some("issue".to_string()),
-                });
-            }
+                for issue in page.issues {
+                    links.push(crate::model::ConversationLink {
+                        id: issue.key,
+                        relation: "child".to_string(),
+                        kind: Some("issue".to_string()),
+                    });
+                }
 
-            if let Some(token) = page.next_page_token {
-                next_page_token = Some(token);
-                continue;
-            }
-            if let (Some(s), Some(m), Some(t)) = (page.start_at, page.max_results, page.total) {
-                let next = s + m;
-                if next < t {
-                    start_at = next;
-                    next_page_token = None;
+                if let Some(token) = page.next_page_token {
+                    next_page_token = Some(token);
                     continue;
+                }
+                if let (Some(s), Some(m), Some(t)) = (page.start_at, page.max_results, page.total)
+                {
+                    let next = s + m;
+                    if next < t {
+                        start_at = next;
+                        next_page_token = None;
+                        continue;
+                    }
+                    break;
+                }
+                if page.is_last == Some(false) {
+                    return Err(AppError::provider(
+                        "Jira child issue search response indicated more pages but provided no pagination cursor.",
+                    )
+                    .with_provider("jira")
+                    .into());
                 }
                 break;
             }
-            if page.is_last == Some(false) {
-                return Err(AppError::provider(
-                    "Jira child issue search response indicated more pages but provided no pagination cursor.",
-                )
-                .with_provider("jira")
-                .into());
-            }
-            break;
-        }
 
-        span.record("jira.links.child.count", usize_to_i64(links.len()));
-        Ok(links)
+            span_for_record.record("jira.links.child.count", usize_to_i64(links.len()));
+            Ok(links)
+        }
+        .instrument(span)
+        .await
     }
 
     pub(super) async fn fetch_comments(
@@ -375,63 +480,71 @@ impl JiraSource {
             "jira.hydrate.issue_comments",
             jira.comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let mut start_at = 0u32;
-        let per_page = Self::bounded_per_page(req.per_page);
-        let mut out = vec![];
+        let span_for_record = span.clone();
+        async {
+            let mut start_at = 0u32;
+            let per_page = Self::bounded_per_page(req.per_page);
+            let mut out = vec![];
 
-        loop {
-            let _page_span = debug_span!("jira.comments.page", start_at, per_page).entered();
-            let url = format!("{}/rest/api/3/issue/{issue_key}/comment", self.base_url);
-            debug!(issue_key, start_at, per_page, "fetching Jira comment page");
-            let http = Self::apply_auth(
-                self.client.get(&url),
-                req.token.as_deref(),
-                req.account_email.as_deref(),
-            )
-            .query(&[
-                ("startAt", start_at.to_string()),
-                ("maxResults", per_page.to_string()),
-            ]);
-            let payload = Self::execute_request(http, "comment fetch").await?;
-            let page: JiraCommentsPage = {
-                let _decode_span =
-                    debug_span!("jira.comments.decode", operation = "comment fetch").entered();
-                Self::decode_jira_json(
-                    &payload,
-                    req.token.as_deref(),
-                    req.account_email.as_deref(),
-                    "comment fetch",
-                )?
-            };
-            trace!(
-                count = page.comments.len(),
-                start_at = page.start_at,
-                "decoded Jira comments page"
-            );
+            loop {
+                let page_span = debug_span!("jira.comments.page", start_at, per_page);
+                let payload = async {
+                    let url = format!("{}/rest/api/3/issue/{issue_key}/comment", self.base_url);
+                    debug!(issue_key, start_at, per_page, "fetching Jira comment page");
+                    let http = Self::apply_auth(
+                        self.client.get(&url),
+                        req.token.as_deref(),
+                        req.account_email.as_deref(),
+                    )
+                    .query(&[
+                        ("startAt", start_at.to_string()),
+                        ("maxResults", per_page.to_string()),
+                    ]);
+                    Self::execute_request(http, "comment fetch").await
+                }
+                .instrument(page_span)
+                .await?;
 
-            for c in page.comments {
-                let body = extract_adf_text(&c.body);
-                out.push(Comment {
-                    author: c.author.map(|a| a.display_name),
-                    created_at: c.created,
-                    body: if body.is_empty() { None } else { Some(body) },
-                    kind: Some("issue_comment".into()),
-                    review_path: None,
-                    review_line: None,
-                    review_side: None,
-                });
+                let decode_span = debug_span!("jira.comments.decode", operation = "comment fetch");
+                let page: JiraCommentsPage = decode_span.in_scope(|| {
+                    Self::decode_jira_json(
+                        &payload,
+                        req.token.as_deref(),
+                        req.account_email.as_deref(),
+                        "comment fetch",
+                    )
+                })?;
+                trace!(
+                    count = page.comments.len(),
+                    start_at = page.start_at,
+                    "decoded Jira comments page"
+                );
+
+                for c in page.comments {
+                    let body = extract_adf_text(&c.body);
+                    out.push(Comment {
+                        author: c.author.map(|a| a.display_name),
+                        created_at: c.created,
+                        body: if body.is_empty() { None } else { Some(body) },
+                        kind: Some("issue_comment".into()),
+                        review_path: None,
+                        review_line: None,
+                        review_side: None,
+                    });
+                }
+
+                let next = page.start_at + page.max_results;
+                if next >= page.total {
+                    break;
+                }
+                start_at = next;
             }
 
-            let next = page.start_at + page.max_results;
-            if next >= page.total {
-                break;
-            }
-            start_at = next;
+            span_for_record.record("jira.comments.count", usize_to_i64(out.len()));
+            Ok(out)
         }
-
-        span.record("jira.comments.count", usize_to_i64(out.len()));
-        Ok(out)
+        .instrument(span)
+        .await
     }
 
     pub(super) fn decode_jira_json<T: DeserializeOwned>(
@@ -509,6 +622,18 @@ impl JiraSource {
     }
 }
 
+fn is_canonical_jira_issue_key(value: &str) -> bool {
+    let Some((project, number)) = value.split_once('-') else {
+        return false;
+    };
+    !project.is_empty()
+        && !number.is_empty()
+        && project
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        && number.chars().all(|ch| ch.is_ascii_digit())
+}
+
 fn body_snippet(body: &str) -> String {
     body.chars()
         .take(200)
@@ -518,4 +643,23 @@ fn body_snippet(body: &str) -> String {
 
 fn usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_canonical_jira_issue_key;
+
+    #[test]
+    fn canonical_jira_key_validator_accepts_expected_keys() {
+        assert!(is_canonical_jira_issue_key("CPQ-20376"));
+        assert!(is_canonical_jira_issue_key("PLM_2-12456"));
+    }
+
+    #[test]
+    fn canonical_jira_key_validator_rejects_noncanonical_keys() {
+        assert!(!is_canonical_jira_issue_key("cpq-20376"));
+        assert!(!is_canonical_jira_issue_key("20376"));
+        assert!(!is_canonical_jira_issue_key("CPQ-"));
+        assert!(!is_canonical_jira_issue_key("-20376"));
+    }
 }
