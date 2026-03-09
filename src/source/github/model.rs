@@ -27,8 +27,13 @@ pub(super) struct IssueItem {
     pub(super) pull_request: Option<PullRequestMarker>,
 }
 
-#[derive(Deserialize)]
-pub(super) struct PullRequestMarker {}
+#[allow(clippy::struct_field_names)]
+#[derive(Deserialize, Clone)]
+pub(super) struct PullRequestMarker {
+    pub(super) html_url: Option<String>,
+    pub(super) diff_url: Option<String>,
+    pub(super) patch_url: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub(super) struct IssueCommentItem {
@@ -58,6 +63,7 @@ pub(super) struct ConversationSeed {
     pub(super) state: String,
     pub(super) body: Option<String>,
     pub(super) is_pr: bool,
+    pub(super) pull_request: Option<PullRequestMarker>,
 }
 
 pub(super) fn map_issue_comment(c: IssueCommentItem) -> Comment {
@@ -115,20 +121,22 @@ pub(super) fn map_issue_collection_links(items: &[Value], relation: &str) -> Vec
         .collect()
 }
 
-pub(super) fn map_issue_url_links(issue: &Value) -> Vec<ConversationLink> {
-    let mut links = Vec::new();
-    if let Some(pr) = issue.get("pull_request") {
-        for field in ["html_url", "diff_url", "patch_url"] {
-            if let Some(url) = pr.get(field).and_then(Value::as_str) {
-                links.push(ConversationLink {
-                    id: url.to_string(),
-                    relation: "references".to_string(),
-                    kind: Some("url".to_string()),
-                });
-            }
-        }
-    }
+pub(super) fn map_pull_request_links(pr: Option<&PullRequestMarker>) -> Vec<ConversationLink> {
+    let Some(pr) = pr else {
+        return Vec::new();
+    };
 
+    let mut links = Vec::new();
+    for url in [&pr.html_url, &pr.diff_url, &pr.patch_url]
+        .into_iter()
+        .flatten()
+    {
+        links.push(ConversationLink {
+            id: url.clone(),
+            relation: "references".to_string(),
+            kind: Some("url".to_string()),
+        });
+    }
     links
 }
 
@@ -274,16 +282,12 @@ mod tests {
     }
 
     #[test]
-    fn issue_url_links_include_issue_and_pr_urls() {
-        let issue: Value = serde_json::json!({
-            "html_url": "https://github.com/o/r/issues/1",
-            "pull_request": {
-                "html_url": "https://github.com/o/r/pull/1",
-                "diff_url": "https://github.com/o/r/pull/1.diff",
-                "patch_url": "https://github.com/o/r/pull/1.patch"
-            }
-        });
-        let links = map_issue_url_links(&issue);
+    fn pull_request_links_include_pr_urls() {
+        let links = map_pull_request_links(Some(&PullRequestMarker {
+            html_url: Some("https://github.com/o/r/pull/1".to_string()),
+            diff_url: Some("https://github.com/o/r/pull/1.diff".to_string()),
+            patch_url: Some("https://github.com/o/r/pull/1.patch".to_string()),
+        }));
         assert!(links.iter().any(|l| l.id.ends_with("/pull/1")));
         assert!(links.iter().any(|l| {
             std::path::Path::new(&l.id)

@@ -95,7 +95,6 @@ mod tests {
                 repo: repo.to_string(),
                 id: id.to_string(),
                 kind: ContentKind::Issue,
-                allow_fallback_to_pr: true,
             },
             per_page: 100,
             token: github_token(),
@@ -106,18 +105,12 @@ mod tests {
         }
     }
 
-    fn req_id_with_kind(
-        repo: &str,
-        id: &str,
-        kind: ContentKind,
-        allow_fallback_to_pr: bool,
-    ) -> FetchRequest {
+    fn req_id_with_kind(repo: &str, id: &str, kind: ContentKind) -> FetchRequest {
         FetchRequest {
             target: FetchTarget::Id {
                 repo: repo.to_string(),
                 id: id.to_string(),
                 kind,
-                allow_fallback_to_pr,
             },
             per_page: 100,
             token: github_token(),
@@ -253,7 +246,7 @@ mod tests {
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_issue_as_pr_errors_when_kind_is_explicit() {
         let source = GitHubSource::new(false).unwrap();
-        let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr, false);
+        let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr);
         let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("not a pull request"));
     }
@@ -262,7 +255,7 @@ mod tests {
     #[ignore = "requires GITHUB_TOKEN and live network"]
     fn github_fetch_pr_as_issue_errors_when_fallback_is_disabled() {
         let source = GitHubSource::new(false).unwrap();
-        let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue, false);
+        let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue);
         let err = fetch_all(&source, &req).unwrap_err().to_string();
         assert!(err.contains("is a pull request"));
     }
@@ -276,7 +269,6 @@ mod tests {
                 repo: "veloren/veloren".into(),
                 id: "6".into(),
                 kind: ContentKind::Issue,
-                allow_fallback_to_pr: true,
             },
             per_page: 50,
             token: gitlab_token(),
@@ -308,7 +300,6 @@ mod tests {
                 repo: "veloren/veloren".into(),
                 id: "6".into(),
                 kind: ContentKind::Pr,
-                allow_fallback_to_pr: false,
             },
             per_page: 50,
             token: gitlab_token(),
@@ -396,7 +387,6 @@ mod tests {
                 repo: String::new(),
                 id: "CLOUD-12817".into(),
                 kind: ContentKind::Issue,
-                allow_fallback_to_pr: false,
             },
             per_page: 50,
             token: jira_token(),
@@ -456,7 +446,6 @@ mod tests {
                 repo: String::new(),
                 id: "CLOUD-12817".into(),
                 kind: ContentKind::Pr,
-                allow_fallback_to_pr: false,
             },
             per_page: 5,
             token: None,
@@ -480,7 +469,6 @@ mod tests {
                 repo,
                 id: pr_id.clone(),
                 kind: ContentKind::Pr,
-                allow_fallback_to_pr: false,
             },
             per_page: 50,
             token: bitbucket_token(),
@@ -526,7 +514,6 @@ mod tests {
                 repo: "workspace/repo".into(),
                 id: "1".into(),
                 kind: ContentKind::Issue,
-                allow_fallback_to_pr: false,
             },
             per_page: 10,
             token: None,

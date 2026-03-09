@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use reqwest_middleware::RequestBuilder;
 use serde::de::DeserializeOwned;
-use tracing::debug_span;
+use tracing::{Instrument, debug_span};
 
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 
@@ -62,12 +62,11 @@ pub(in crate::source::bitbucket) async fn execute_request(
         error.type = tracing::field::Empty,
         error.message = tracing::field::Empty
     );
-    let _exchange_guard = exchange_span.enter();
-
-    let response = {
-        let _request_span = debug_span!("bitbucket.http.request", operation = operation).entered();
-        apply_otel_span_name(req, "reqwest.http.get").send().await
-    };
+    let response = apply_otel_span_name(req, "reqwest.http.get")
+        .send()
+        .instrument(debug_span!("bitbucket.http.request", operation = operation))
+        .instrument(exchange_span.clone())
+        .await;
     let response = match response {
         Ok(response) => response,
         Err(err) => {
@@ -93,9 +92,13 @@ pub(in crate::source::bitbucket) async fn execute_request(
             error.type = tracing::field::Empty,
             error.message = tracing::field::Empty
         );
-        let _read_guard = read_span.enter();
         read_span.record("status_code", i64::from(status.as_u16()));
-        match response.text().await {
+        match response
+            .text()
+            .instrument(read_span.clone())
+            .instrument(exchange_span.clone())
+            .await
+        {
             Ok(body) => body,
             Err(err) => {
                 let error_message = err.to_string();

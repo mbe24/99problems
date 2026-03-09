@@ -107,6 +107,13 @@ pub(crate) fn list_entries(cfg: &DotfileConfig) -> Vec<(String, String, bool)> {
             push_field(
                 &mut entries,
                 alias,
+                "type_default",
+                inst.type_default.as_deref(),
+                false,
+            );
+            push_field(
+                &mut entries,
+                alias,
                 "deployment",
                 inst.deployment.as_deref(),
                 false,
@@ -149,6 +156,7 @@ pub(crate) fn get_key_value(cfg: &DotfileConfig, key: &ConfigKey) -> Option<Stri
                 InstanceField::Repo => inst.repo.clone(),
                 InstanceField::State => inst.state.clone(),
                 InstanceField::Type => inst.kind.clone(),
+                InstanceField::TypeDefault => inst.type_default.clone(),
                 InstanceField::Deployment => inst.deployment.clone(),
                 InstanceField::PerPage => inst.per_page.map(|v| v.to_string()),
             }
@@ -269,6 +277,7 @@ fn validate_instance_keys(table: &toml::value::Table) -> Result<()> {
                     | "repo"
                     | "state"
                     | "type"
+                    | "type_default"
                     | "deployment"
                     | "per_page"
             ) {
@@ -297,6 +306,10 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
         repo: override_cfg.repo.clone().or_else(|| base.repo.clone()),
         state: override_cfg.state.clone().or_else(|| base.state.clone()),
         kind: override_cfg.kind.clone().or_else(|| base.kind.clone()),
+        type_default: override_cfg
+            .type_default
+            .clone()
+            .or_else(|| base.type_default.clone()),
         deployment: override_cfg
             .deployment
             .clone()

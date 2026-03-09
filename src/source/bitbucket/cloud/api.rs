@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
-use tracing::{debug, debug_span, trace};
+use tracing::{Instrument, debug, debug_span, trace};
 
 use super::super::shared::{apply_auth, decode_bitbucket_json, execute_request};
 use super::super::{BitbucketSource, PAGE_SIZE};
@@ -18,14 +18,21 @@ impl BitbucketSource {
         token: Option<&str>,
         operation: &str,
     ) -> Result<Option<T>> {
-        let _span = debug_span!("bitbucket.cloud.single.fetch", operation = operation).entered();
-        let request = apply_auth(self.client.get(url), token).header("Accept", "application/json");
-        let payload = execute_request(request, operation).await?;
-        if payload.status == StatusCode::NOT_FOUND {
-            return Ok(None);
+        let span = debug_span!("bitbucket.cloud.single.fetch", operation = operation);
+        async {
+            let request =
+                apply_auth(self.client.get(url), token).header("Accept", "application/json");
+            let payload = execute_request(request, operation)
+                .instrument(span.clone())
+                .await?;
+            if payload.status == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            let item = decode_bitbucket_json(&payload, token, operation)?;
+            Ok(Some(item))
         }
-        let item = decode_bitbucket_json(&payload, token, operation)?;
-        Ok(Some(item))
+        .instrument(span.clone())
+        .await
     }
 
     pub(super) async fn cloud_get_pages<T: DeserializeOwned>(
@@ -41,8 +48,9 @@ impl BitbucketSource {
         let mut first = true;
 
         while let Some(current_url) = next_url {
-            let _page_span = debug_span!("bitbucket.cloud.page.fetch", per_page).entered();
-            debug!(url = %current_url, per_page, "fetching Bitbucket cloud page");
+            let page_span = debug_span!("bitbucket.cloud.page.fetch", per_page);
+            page_span
+                .in_scope(|| debug!(url = %current_url, per_page, "fetching Bitbucket cloud page"));
             let mut request = apply_auth(self.client.get(&current_url), token)
                 .header("Accept", "application/json");
             if first {
@@ -52,13 +60,15 @@ impl BitbucketSource {
                 first = false;
             }
 
-            let payload = execute_request(request, "page fetch").await?;
-            let page: BitbucketPage<T> = {
-                let _decode_span =
-                    debug_span!("bitbucket.cloud.page.decode", operation = "page fetch").entered();
-                decode_bitbucket_json(&payload, token, "page fetch")?
-            };
-            trace!(count = page.values.len(), "decoded Bitbucket cloud page");
+            let payload = execute_request(request, "page fetch")
+                .instrument(page_span.clone())
+                .await?;
+            let page: BitbucketPage<T> = page_span.in_scope(|| {
+                debug_span!("bitbucket.cloud.page.decode", operation = "page fetch")
+                    .in_scope(|| decode_bitbucket_json(&payload, token, "page fetch"))
+            })?;
+            page_span
+                .in_scope(|| trace!(count = page.values.len(), "decoded Bitbucket cloud page"));
             out.extend(page.values);
             next_url = page.next;
         }

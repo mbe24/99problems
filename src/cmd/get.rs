@@ -506,7 +506,6 @@ fn build_source_for_platform(cfg: &Config, telemetry_active: bool) -> Result<Box
 fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     let repo = cfg.repo.clone();
     let state = cfg.state.clone();
-    let is_bitbucket = cfg.platform == "bitbucket";
     let effective_kind = effective_kind(cfg);
 
     if let Some(id) = &args.id {
@@ -535,11 +534,6 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
                 repo: repo_for_id,
                 id: id.clone(),
                 kind: id_kind,
-                allow_fallback_to_pr: if is_bitbucket {
-                    false
-                } else {
-                    !cfg.kind_explicit && matches!(id_kind, ContentKind::Issue)
-                },
             },
             per_page: cfg.per_page,
             token: cfg.token.clone(),
@@ -882,13 +876,8 @@ mod tests {
         let cfg = bitbucket_config("cloud", "issue", false);
         let req = build_fetch_request(&cfg, &args()).unwrap();
         match req.target {
-            FetchTarget::Id {
-                kind,
-                allow_fallback_to_pr,
-                ..
-            } => {
+            FetchTarget::Id { kind, .. } => {
                 assert!(matches!(kind, ContentKind::Pr));
-                assert!(!allow_fallback_to_pr);
             }
             FetchTarget::Search { .. } => panic!("expected id target"),
         }

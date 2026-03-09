@@ -18,6 +18,7 @@ pub(crate) enum InstanceField {
     Repo,
     State,
     Type,
+    TypeDefault,
     Deployment,
     PerPage,
 }
@@ -32,6 +33,7 @@ impl InstanceField {
             InstanceField::Repo => "repo",
             InstanceField::State => "state",
             InstanceField::Type => "type",
+            InstanceField::TypeDefault => "type_default",
             InstanceField::Deployment => "deployment",
             InstanceField::PerPage => "per_page",
         }
@@ -80,11 +82,12 @@ impl ConfigKey {
             "repo" => InstanceField::Repo,
             "state" => InstanceField::State,
             "type" => InstanceField::Type,
+            "type_default" => InstanceField::TypeDefault,
             "deployment" => InstanceField::Deployment,
             "per_page" => InstanceField::PerPage,
             other => {
                 return Err(anyhow!(
-                    "Unsupported instance field '{other}'. Supported: platform, url, token, account_email, repo, state, type, deployment, per_page."
+                    "Unsupported instance field '{other}'. Supported: platform, url, token, account_email, repo, state, type, type_default, deployment, per_page."
                 ));
             }
         };
@@ -142,6 +145,18 @@ mod tests {
             ConfigKey::InstanceField {
                 alias: "work".to_string(),
                 field: InstanceField::Platform
+            }
+        );
+    }
+
+    #[test]
+    fn parses_type_default_field() {
+        let key = ConfigKey::parse("instances.work.type_default").unwrap();
+        assert_eq!(
+            key,
+            ConfigKey::InstanceField {
+                alias: "work".to_string(),
+                field: InstanceField::TypeDefault
             }
         );
     }

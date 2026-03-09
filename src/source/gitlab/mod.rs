@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
-use tracing::{debug_span, warn};
+use tracing::{Instrument, debug_span};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::AppError;
@@ -11,6 +11,7 @@ mod api;
 mod model;
 mod query;
 
+use api::GitLabPageContext;
 use model::{ConversationSeed, GitLabIssueItem, GitLabMergeRequestItem};
 use query::{build_search_params, encode_project_path, parse_gitlab_query};
 
@@ -65,72 +66,90 @@ impl GitLabSource {
         raw_query: &str,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        let _span = debug_span!("gitlab.search").entered();
-        let filters = parse_gitlab_query(raw_query);
-        let repo = filters
-            .repo
-            .as_deref()
-            .ok_or_else(|| {
-                AppError::usage(
-                    "No repo: found in query. Use --repo or include 'repo:group/project' in -q",
-                )
-            })?
-            .to_string();
-        let project = encode_project_path(&repo);
-        let params = build_search_params(&filters);
-        let mut emitted = 0usize;
+        let span = debug_span!("gitlab.search");
+        async {
+            let filters = parse_gitlab_query(raw_query);
+            let repo = filters
+                .repo
+                .as_deref()
+                .ok_or_else(|| {
+                    AppError::usage(
+                        "No repo: found in query. Use --repo or include 'repo:group/project' in -q",
+                    )
+                })?
+                .to_string();
+            let project = encode_project_path(&repo);
+            let params = build_search_params(&filters);
+            let mut emitted = 0usize;
 
-        match filters.kind {
-            ContentKind::Issue => {
-                let url = format!("{}/api/v4/projects/{project}/issues", self.base_url);
-                let issues: Vec<GitLabIssueItem> = self
-                    .get_pages(&url, &params, req.token.as_deref(), req.per_page, false)
-                    .await?;
-                for i in issues {
-                    let conversation = self
-                        .fetch_conversation(
-                            &repo,
-                            ConversationSeed {
-                                id: i.iid,
-                                title: i.title,
-                                state: i.state,
-                                body: i.description,
-                                is_pr: false,
-                                web_url: i.web_url,
-                            },
-                            req,
+            match filters.kind {
+                ContentKind::Issue => {
+                    let url = format!("{}/api/v4/projects/{project}/issues", self.base_url);
+                    let issues: Vec<GitLabIssueItem> = self
+                        .get_pages(
+                            &url,
+                            &params,
+                            req.token.as_deref(),
+                            req.per_page,
+                            false,
+                            GitLabPageContext::new("search", "issue search fetch"),
                         )
                         .await?;
-                    emit(conversation)?;
-                    emitted += 1;
+                    for i in issues {
+                        let conversation = self
+                            .fetch_conversation(
+                                &repo,
+                                ConversationSeed {
+                                    id: i.iid,
+                                    title: i.title,
+                                    state: i.state,
+                                    body: i.description,
+                                    is_pr: false,
+                                    web_url: i.web_url,
+                                },
+                                req,
+                            )
+                            .await?;
+                        emit(conversation)?;
+                        emitted += 1;
+                    }
                 }
-            }
-            ContentKind::Pr => {
-                let url = format!("{}/api/v4/projects/{project}/merge_requests", self.base_url);
-                let mrs: Vec<GitLabMergeRequestItem> = self
-                    .get_pages(&url, &params, req.token.as_deref(), req.per_page, false)
-                    .await?;
-                for mr in mrs {
-                    let conversation = self
-                        .fetch_conversation(
-                            &repo,
-                            ConversationSeed {
-                                id: mr.iid,
-                                title: mr.title,
-                                state: mr.state,
-                                body: mr.description,
-                                is_pr: true,
-                                web_url: mr.web_url,
-                            },
-                            req,
+                ContentKind::Pr => {
+                    let url = format!("{}/api/v4/projects/{project}/merge_requests", self.base_url);
+                    let mrs: Vec<GitLabMergeRequestItem> = self
+                        .get_pages(
+                            &url,
+                            &params,
+                            req.token.as_deref(),
+                            req.per_page,
+                            false,
+                            GitLabPageContext::new("search", "merge request search fetch"),
                         )
                         .await?;
-                    emit(conversation)?;
-                    emitted += 1;
+                    for mr in mrs {
+                        let conversation = self
+                            .fetch_conversation(
+                                &repo,
+                                ConversationSeed {
+                                    id: mr.iid,
+                                    title: mr.title,
+                                    state: mr.state,
+                                    body: mr.description,
+                                    is_pr: true,
+                                    web_url: mr.web_url,
+                                },
+                                req,
+                            )
+                            .await?;
+                        emit(conversation)?;
+                        emitted += 1;
+                    }
                 }
             }
+            Ok(emitted)
         }
-        Ok(emitted)
+        .instrument(span)
+        .await
     }
 
     async fn fetch_by_id_stream(
@@ -139,105 +158,19 @@ impl GitLabSource {
         repo: &str,
         id: &str,
         kind: ContentKind,
-        allow_fallback_to_pr: bool,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        let _span = debug_span!("gitlab.id.fetch").entered();
-        let iid = id.parse::<u64>().map_err(|_| {
-            AppError::usage(format!("GitLab expects a numeric issue/MR id, got '{id}'."))
-        })?;
-        match kind {
-            ContentKind::Issue => {
-                if let Some(issue) = self
-                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())
-                    .await?
-                {
-                    let conversation = self
-                        .fetch_conversation(
-                            repo,
-                            ConversationSeed {
-                                id: issue.iid,
-                                title: issue.title,
-                                state: issue.state,
-                                body: issue.description,
-                                is_pr: false,
-                                web_url: issue.web_url,
-                            },
-                            req,
-                        )
-                        .await?;
-                    emit(conversation)?;
-                    return Ok(1);
-                }
-
-                if allow_fallback_to_pr
-                    && let Some(mr) = self
-                        .fetch_mr_by_iid(repo, iid, req.token.as_deref())
-                        .await?
-                {
-                    warn!(
-                        "Warning: --id defaulted to issue, but found MR !{iid}; use --type pr for clarity."
-                    );
-                    let conversation = self
-                        .fetch_conversation(
-                            repo,
-                            ConversationSeed {
-                                id: mr.iid,
-                                title: mr.title,
-                                state: mr.state,
-                                body: mr.description,
-                                is_pr: true,
-                                web_url: mr.web_url,
-                            },
-                            req,
-                        )
-                        .await?;
-                    emit(conversation)?;
-                    return Ok(1);
-                }
-
-                Err(AppError::not_found(format!("Issue #{iid} not found in repo {repo}.")).into())
-            }
-            ContentKind::Pr => {
-                if let Some(mr) = self
-                    .fetch_mr_by_iid(repo, iid, req.token.as_deref())
-                    .await?
-                {
-                    let conversation = self
-                        .fetch_conversation(
-                            repo,
-                            ConversationSeed {
-                                id: mr.iid,
-                                title: mr.title,
-                                state: mr.state,
-                                body: mr.description,
-                                is_pr: true,
-                                web_url: mr.web_url,
-                            },
-                            req,
-                        )
-                        .await?;
-                    emit(conversation)?;
-                    return Ok(1);
-                }
-
-                if self
-                    .fetch_issue_by_iid(repo, iid, req.token.as_deref())
-                    .await?
-                    .is_some()
-                {
-                    return Err(AppError::usage(format!(
-                        "ID {iid} in repo {repo} is an issue, not a merge request."
-                    ))
-                    .into());
-                }
-
-                Err(
-                    AppError::not_found(format!("Merge request !{iid} not found in repo {repo}."))
-                        .into(),
-                )
-            }
+        let span = debug_span!("gitlab.id.fetch");
+        async {
+            let iid = id.parse::<u64>().map_err(|_| {
+                AppError::usage(format!("GitLab expects a numeric issue/MR id, got '{id}'."))
+            })?;
+            let conversation = self.fetch_conversation_by_id(repo, iid, kind, req).await?;
+            emit(conversation)?;
+            Ok(1)
         }
+        .instrument(span)
+        .await
     }
 }
 
@@ -250,14 +183,8 @@ impl Source for GitLabSource {
     ) -> Result<usize> {
         match &req.target {
             FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
-            FetchTarget::Id {
-                repo,
-                id,
-                kind,
-                allow_fallback_to_pr,
-            } => {
-                self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit)
-                    .await
+            FetchTarget::Id { repo, id, kind } => {
+                self.fetch_by_id_stream(req, repo, id, *kind, emit).await
             }
         }
     }

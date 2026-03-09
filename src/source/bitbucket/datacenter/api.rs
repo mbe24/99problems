@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
-use tracing::{debug, debug_span, trace};
+use tracing::{Instrument, debug, debug_span, trace};
 
 use super::super::BitbucketSource;
 use super::super::shared::{apply_auth, decode_bitbucket_json, execute_request};
@@ -20,9 +20,10 @@ impl BitbucketSource {
         let mut start = 0u32;
 
         loop {
-            let _page_span =
-                debug_span!("bitbucket.datacenter.page.fetch", start, per_page).entered();
-            debug!(url = %url, start, per_page, "fetching Bitbucket Data Center page");
+            let page_span = debug_span!("bitbucket.datacenter.page.fetch", start, per_page);
+            page_span.in_scope(|| {
+                debug!(url = %url, start, per_page, "fetching Bitbucket Data Center page");
+            });
             let mut query_params = params.to_vec();
             query_params.push(("start".to_string(), start.to_string()));
             query_params.push(("limit".to_string(), per_page.to_string()));
@@ -30,18 +31,20 @@ impl BitbucketSource {
             let request = apply_auth(self.client.get(url), token)
                 .header("Accept", "application/json")
                 .query(&query_params);
-            let payload = execute_request(request, "page fetch").await?;
-            let page: BitbucketDcPage<T> = {
-                let _decode_span =
-                    debug_span!("bitbucket.datacenter.page.decode", operation = "page fetch")
-                        .entered();
-                decode_bitbucket_json(&payload, token, "page fetch")?
-            };
-            trace!(
-                count = page.values.len(),
-                is_last_page = page.is_last_page,
-                "decoded Bitbucket Data Center page"
-            );
+            let payload = execute_request(request, "page fetch")
+                .instrument(page_span.clone())
+                .await?;
+            let page: BitbucketDcPage<T> = page_span.in_scope(|| {
+                debug_span!("bitbucket.datacenter.page.decode", operation = "page fetch")
+                    .in_scope(|| decode_bitbucket_json(&payload, token, "page fetch"))
+            })?;
+            page_span.in_scope(|| {
+                trace!(
+                    count = page.values.len(),
+                    is_last_page = page.is_last_page,
+                    "decoded Bitbucket Data Center page"
+                );
+            });
 
             out.extend(page.values);
 
@@ -64,15 +67,21 @@ impl BitbucketSource {
         token: Option<&str>,
         operation: &str,
     ) -> Result<Option<T>> {
-        let _span =
-            debug_span!("bitbucket.datacenter.single.fetch", operation = operation).entered();
-        let request = apply_auth(self.client.get(url), token).header("Accept", "application/json");
-        let payload = execute_request(request, operation).await?;
-        if payload.status == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
+        let span = debug_span!("bitbucket.datacenter.single.fetch", operation = operation);
+        async {
+            let request =
+                apply_auth(self.client.get(url), token).header("Accept", "application/json");
+            let payload = execute_request(request, operation)
+                .instrument(span.clone())
+                .await?;
+            if payload.status == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
 
-        let item = decode_bitbucket_json(&payload, token, operation)?;
-        Ok(Some(item))
+            let item = decode_bitbucket_json(&payload, token, operation)?;
+            Ok(Some(item))
+        }
+        .instrument(span.clone())
+        .await
     }
 }

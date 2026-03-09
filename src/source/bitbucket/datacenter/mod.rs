@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::warn;
+use tracing::{Instrument, warn};
 
 use self::model::{
     BitbucketDcActivityItem, BitbucketDcPullRequestItem, collect_comments_from_activity,
@@ -24,12 +24,7 @@ impl BitbucketSource {
             FetchTarget::Search { raw_query } => {
                 self.search_datacenter_stream(req, raw_query, emit).await
             }
-            FetchTarget::Id {
-                repo,
-                id,
-                kind,
-                allow_fallback_to_pr: _,
-            } => {
+            FetchTarget::Id { repo, id, kind } => {
                 self.fetch_datacenter_by_id_stream(req, repo, id, *kind, emit)
                     .await
             }
@@ -113,12 +108,11 @@ impl BitbucketSource {
             .into());
         }
 
-        if let Some(pr) = self.fetch_datacenter_pr_by_id(repo, id, req).await? {
-            emit(self.fetch_datacenter_pr_conversation(repo, pr, req).await?)?;
-            return Ok(1);
-        }
-
-        Err(AppError::not_found(format!("Pull request #{id} not found in repo {repo}.")).into())
+        emit(
+            self.fetch_datacenter_pr_conversation_by_id(repo, id, req)
+                .await?,
+        )?;
+        Ok(1)
     }
 
     async fn fetch_datacenter_pr_by_id(
@@ -142,39 +136,132 @@ impl BitbucketSource {
         item: BitbucketDcPullRequestItem,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let comments = if req.include_comments {
-            self.fetch_datacenter_pr_comments(repo, item.id, req)
-                .await?
-        } else {
-            Vec::new()
-        };
+        let span = tracing::debug_span!(
+            "bitbucket.hydrate.issue",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = true
+        );
+        async {
+            let comments_task = async {
+                if req.include_comments {
+                    self.fetch_datacenter_pr_comments(repo, item.id, req).await
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+            let metadata_task = async {
+                if req.include_links {
+                    match self
+                        .fetch_datacenter_links(repo, item.id, item.links.as_ref(), req)
+                        .await
+                    {
+                        Ok(metadata) => metadata,
+                        Err(err) => {
+                            warn!(
+                                repo,
+                                id = item.id,
+                                error = %err,
+                                "Bitbucket Data Center links fetch failed; continuing without links"
+                            );
+                            ConversationMetadata::empty()
+                        }
+                    }
+                } else {
+                    ConversationMetadata::empty()
+                }
+            };
+            let (comments_result, metadata) = tokio::join!(comments_task, metadata_task);
+            let comments = comments_result?;
 
-        Ok(Conversation {
-            id: item.id.to_string(),
-            title: item.title,
-            state: item.state,
-            body: item.description.filter(|body| !body.is_empty()),
-            comments,
-            metadata: if req.include_links {
+            Ok(Conversation {
+                id: item.id.to_string(),
+                title: item.title,
+                state: item.state,
+                body: item.description.filter(|body| !body.is_empty()),
+                comments,
+                metadata,
+            })
+        }
+        .instrument(span.clone())
+        .await
+    }
+
+    async fn fetch_datacenter_pr_conversation_by_id(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
+        let span = tracing::debug_span!(
+            "bitbucket.hydrate.issue",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = true
+        );
+        async {
+            let pr_task = self.fetch_datacenter_pr_by_id(repo, id, req);
+            let comments_task = async {
+                if req.include_comments {
+                    self.fetch_datacenter_pr_comments(repo, id, req).await
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+            let linked_jira_task = async {
+                if !req.include_links {
+                    return Vec::new();
+                }
                 match self
-                    .fetch_datacenter_links(repo, item.id, item.links.as_ref(), req)
+                    .fetch_datacenter_linked_jira_issues(repo, id, req)
                     .await
                 {
-                    Ok(metadata) => metadata,
+                    Ok(links) => links,
                     Err(err) => {
                         warn!(
                             repo,
-                            id = item.id,
+                            id,
                             error = %err,
                             "Bitbucket Data Center links fetch failed; continuing without links"
                         );
-                        ConversationMetadata::empty()
+                        Vec::new()
                     }
                 }
+            };
+
+            let (pr_result, comments_result, linked_jira_links) =
+                tokio::join!(pr_task, comments_task, linked_jira_task);
+            let pr = match pr_result? {
+                Some(pr) => pr,
+                None => {
+                    return Err(AppError::not_found(format!(
+                        "Pull request #{id} not found in repo {repo}."
+                    ))
+                    .into());
+                }
+            };
+            let comments = comments_result?;
+            let metadata = if req.include_links {
+                let mut links = map_url_links(pr.links.as_ref());
+                links.extend(linked_jira_links);
+                ConversationMetadata::with_links(links)
             } else {
                 ConversationMetadata::empty()
-            },
-        })
+            };
+
+            Ok(Conversation {
+                id: pr.id.to_string(),
+                title: pr.title,
+                state: pr.state,
+                body: pr.description.filter(|body| !body.is_empty()),
+                comments,
+                metadata,
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn fetch_datacenter_links(
@@ -188,17 +275,20 @@ impl BitbucketSource {
             "bitbucket.hydrate.links",
             bitbucket.links.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let mut links = map_url_links(pr_links);
-        links.extend(
-            self.fetch_datacenter_linked_jira_issues(repo, id, req)
-                .await?,
-        );
-        span.record(
-            "bitbucket.links.count",
-            i64::try_from(links.len()).unwrap_or(i64::MAX),
-        );
-        Ok(ConversationMetadata::with_links(links))
+        async {
+            let mut links = map_url_links(pr_links);
+            links.extend(
+                self.fetch_datacenter_linked_jira_issues(repo, id, req)
+                    .await?,
+            );
+            span.record(
+                "bitbucket.links.count",
+                i64::try_from(links.len()).unwrap_or(i64::MAX),
+            );
+            Ok(ConversationMetadata::with_links(links))
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn fetch_datacenter_linked_jira_issues(
@@ -235,27 +325,30 @@ impl BitbucketSource {
             "bitbucket.hydrate.issue_comments",
             bitbucket.comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let (project, repo_slug) = parse_project_repo(Some(repo))?;
-        let url = format!(
-            "{}/rest/api/latest/projects/{project}/repos/{repo_slug}/pull-requests/{id}/activities",
-            self.base_url
-        );
+        async {
+            let (project, repo_slug) = parse_project_repo(Some(repo))?;
+            let url = format!(
+                "{}/rest/api/latest/projects/{project}/repos/{repo_slug}/pull-requests/{id}/activities",
+                self.base_url
+            );
 
-        let items: Vec<BitbucketDcActivityItem> = self
-            .datacenter_get_pages(&url, &[], req.token.as_deref(), req.per_page)
-            .await?;
+            let items: Vec<BitbucketDcActivityItem> = self
+                .datacenter_get_pages(&url, &[], req.token.as_deref(), req.per_page)
+                .await?;
 
-        let mut comments = Vec::new();
-        for item in items {
-            collect_comments_from_activity(item, req.include_review_comments, &mut comments);
+            let mut comments = Vec::new();
+            for item in items {
+                collect_comments_from_activity(item, req.include_review_comments, &mut comments);
+            }
+
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            span.record(
+                "bitbucket.comments.count",
+                i64::try_from(comments.len()).unwrap_or(i64::MAX),
+            );
+            Ok(comments)
         }
-
-        comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        span.record(
-            "bitbucket.comments.count",
-            i64::try_from(comments.len()).unwrap_or(i64::MAX),
-        );
-        Ok(comments)
+        .instrument(span.clone())
+        .await
     }
 }
