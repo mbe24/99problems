@@ -1,8 +1,8 @@
 [package]
 name = "problems99"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2024"
-description = "GitHub issue conversation fetcher CLI"
+description = "AI-native CLI for issue/PR context retrieval across Jira, GitLab, GitHub, and Bitbucket, with structured output for humans and AI agents."
 license = "Apache-2.0"
 
 [[bin]]
