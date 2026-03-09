@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
-use tracing::{debug, debug_span, trace, warn};
+use tracing::{Instrument, debug, debug_span, trace};
 
 use super::{ContentKind, FetchRequest, FetchTarget, Source};
 use crate::error::AppError;
@@ -11,7 +11,7 @@ mod api;
 mod model;
 mod query;
 
-use model::{ConversationSeed, IssueItem, SearchResponse};
+use model::{ConversationSeed, SearchResponse};
 use query::{extract_repo, repo_from_repository_url};
 
 pub(super) const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -66,24 +66,27 @@ impl GitHubSource {
         let repo_from_query = extract_repo(raw_query);
 
         loop {
-            let _page_span = debug_span!("github.search.page", page, per_page).entered();
-            debug!(page, per_page, "fetching GitHub search page");
-            let req_http = self.client.get(&search_url).query(&[
-                ("q", raw_query),
-                ("per_page", &per_page.to_string()),
-                ("page", &page.to_string()),
-            ]);
-            let req_http = Self::apply_auth(req_http, req.token.as_deref());
-            let payload = Self::execute_request(req_http, "search", "reqwest.http.get").await?;
-            let search: SearchResponse = {
-                let _decode_span =
-                    debug_span!("github.search.decode", operation = "search").entered();
-                Self::decode_github_json(&payload, req.token.as_deref(), "search")?
-            };
-            trace!(
-                count = search.items.len(),
-                page, "decoded GitHub search page"
-            );
+            let search: SearchResponse = async {
+                debug!(page, per_page, "fetching GitHub search page");
+                let req_http = self.client.get(&search_url).query(&[
+                    ("q", raw_query),
+                    ("per_page", &per_page.to_string()),
+                    ("page", &page.to_string()),
+                ]);
+                let req_http = Self::apply_auth(req_http, req.token.as_deref());
+                let payload = Self::execute_request(req_http, "search", "reqwest.http.get").await?;
+                let decode_span = debug_span!("github.search.decode", operation = "search");
+                let search: SearchResponse = decode_span.in_scope(|| {
+                    Self::decode_github_json(&payload, req.token.as_deref(), "search")
+                })?;
+                trace!(
+                    count = search.items.len(),
+                    page, "decoded GitHub search page"
+                );
+                Ok::<SearchResponse, anyhow::Error>(search)
+            }
+            .instrument(debug_span!("github.search.page", page, per_page))
+            .await?;
             let done = search.items.len() < per_page as usize;
             for item in search.items {
                 let repo = item
@@ -98,19 +101,19 @@ impl GitHubSource {
                         ))
                     })?;
 
-                let conversation = self
-                    .fetch_conversation(
-                        &repo,
-                        ConversationSeed {
-                            id: item.number,
-                            title: item.title,
-                            state: item.state,
-                            body: item.body,
-                            is_pr: item.pull_request.is_some(),
-                        },
-                        req,
-                    )
-                    .await?;
+                let conversation = Box::pin(self.fetch_conversation(
+                    &repo,
+                    ConversationSeed {
+                        id: item.number,
+                        title: item.title,
+                        state: item.state,
+                        body: item.body,
+                        is_pr: item.pull_request.is_some(),
+                        pull_request: item.pull_request,
+                    },
+                    req,
+                ))
+                .await?;
                 emit(conversation)?;
                 emitted += 1;
             }
@@ -129,56 +132,19 @@ impl GitHubSource {
         repo: &str,
         id: &str,
         kind: ContentKind,
-        allow_fallback_to_pr: bool,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        let _span = debug_span!("github.id.fetch").entered();
-        let issue_id = id.parse::<u64>().map_err(|_| {
-            AppError::usage(format!("GitHub expects a numeric issue/PR id, got '{id}'."))
-        })?;
-        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
-        let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
-        let payload = Self::execute_request(request, "issue fetch", "reqwest.http.get").await?;
-        let issue: IssueItem =
-            Self::decode_github_json(&payload, req.token.as_deref(), "issue fetch")?;
-        let is_pr = issue.pull_request.is_some();
-
-        match kind {
-            ContentKind::Issue if is_pr && !allow_fallback_to_pr => {
-                return Err(AppError::usage(format!(
-                    "ID {issue_id} in repo {repo} is a pull request. Use --type pr or omit --type."
-                ))
-                .into());
-            }
-            ContentKind::Issue if is_pr && allow_fallback_to_pr => {
-                warn!(
-                    "Warning: --id defaulted to issue, but found PR #{issue_id}; use --type pr for clarity."
-                );
-            }
-            ContentKind::Pr if !is_pr => {
-                return Err(AppError::usage(format!(
-                    "ID {issue_id} in repo {repo} is an issue, not a pull request."
-                ))
-                .into());
-            }
-            _ => {}
+        async {
+            let issue_id = id.parse::<u64>().map_err(|_| {
+                AppError::usage(format!("GitHub expects a numeric issue/PR id, got '{id}'."))
+            })?;
+            let conversation =
+                Box::pin(self.fetch_conversation_by_id(repo, issue_id, kind, req)).await?;
+            emit(conversation)?;
+            Ok(1)
         }
-
-        let conversation = self
-            .fetch_conversation(
-                repo,
-                ConversationSeed {
-                    id: issue.number,
-                    title: issue.title,
-                    state: issue.state,
-                    body: issue.body,
-                    is_pr,
-                },
-                req,
-            )
-            .await?;
-        emit(conversation)?;
-        Ok(1)
+        .instrument(debug_span!("github.id.fetch"))
+        .await
     }
 }
 
@@ -190,15 +156,11 @@ impl Source for GitHubSource {
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
         match &req.target {
-            FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
-            FetchTarget::Id {
-                repo,
-                id,
-                kind,
-                allow_fallback_to_pr,
-            } => {
-                self.fetch_by_id_stream(req, repo, id, *kind, *allow_fallback_to_pr, emit)
-                    .await
+            FetchTarget::Search { raw_query } => {
+                Box::pin(self.search_stream(req, raw_query, emit)).await
+            }
+            FetchTarget::Id { repo, id, kind } => {
+                Box::pin(self.fetch_by_id_stream(req, repo, id, *kind, emit)).await
             }
         }
     }

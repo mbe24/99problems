@@ -3,17 +3,17 @@ use reqwest::StatusCode;
 use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use reqwest_middleware::RequestBuilder;
 use serde::Deserialize;
-use tracing::{debug, debug_span, trace, warn};
+use tracing::{Instrument, debug, debug_span, trace, warn};
 
 use super::model::{
-    ConversationSeed, IssueCommentItem, ReviewCommentItem, map_graphql_link_nodes,
-    map_issue_collection_links, map_issue_comment, map_issue_url_links, map_review_comment,
-    map_timeline_links,
+    ConversationSeed, IssueCommentItem, IssueItem, PullRequestMarker, ReviewCommentItem,
+    map_graphql_link_nodes, map_issue_collection_links, map_issue_comment, map_pull_request_links,
+    map_review_comment, map_timeline_links,
 };
 use super::{GITHUB_API_BASE, GITHUB_API_VERSION, GitHubSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
-use crate::source::FetchRequest;
+use crate::source::{ContentKind, FetchRequest};
 
 pub(super) struct GitHubHttpPayload {
     status: StatusCode,
@@ -86,29 +86,31 @@ impl GitHubSource {
             error.type = tracing::field::Empty,
             error.message = tracing::field::Empty
         );
-        let _exchange_guard = exchange_span.enter();
-        let response = {
-            let _request_span = debug_span!("github.http.request", operation = operation).entered();
-            Self::apply_otel_span_name(req, span_name).send().await
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(err) => {
-                let (mapped, error_type, error_message) = Self::map_request_error(operation, err);
-                exchange_span.record("error.type", error_type);
-                exchange_span.record("error.message", error_message.as_str());
-                return Err(mapped.into());
-            }
-        };
+        let span_for_record = exchange_span.clone();
+        async move {
+            let request_span = debug_span!("github.http.request", operation = operation);
+            let response = Self::apply_otel_span_name(req, span_name)
+                .send()
+                .instrument(request_span)
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(err) => {
+                    let (mapped, error_type, error_message) =
+                        Self::map_request_error(operation, err);
+                    span_for_record.record("error.type", error_type);
+                    span_for_record.record("error.message", error_message.as_str());
+                    return Err(mapped.into());
+                }
+            };
 
-        let status = response.status();
-        let headers = response.headers().clone();
-        let content_type = headers
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body = {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let content_type = headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
             let read_span = debug_span!(
                 "github.http.response.read",
                 operation = operation,
@@ -116,29 +118,30 @@ impl GitHubSource {
                 error.type = tracing::field::Empty,
                 error.message = tracing::field::Empty
             );
-            let _read_guard = read_span.enter();
             read_span.record("status_code", i64::from(status.as_u16()));
-            match response.text().await {
+            let body = match response.text().instrument(read_span.clone()).await {
                 Ok(body) => body,
                 Err(err) => {
                     let error_message = err.to_string();
                     read_span.record("error.type", "response_read_error");
                     read_span.record("error.message", error_message.as_str());
-                    exchange_span.record("error.type", "response_read_error");
-                    exchange_span.record("error.message", error_message.as_str());
+                    span_for_record.record("error.type", "response_read_error");
+                    span_for_record.record("error.message", error_message.as_str());
                     return Err(app_error_from_reqwest("GitHub", operation, &err).into());
                 }
-            }
-        };
+            };
 
-        exchange_span.record("status_code", i64::from(status.as_u16()));
-        exchange_span.record("body_bytes", usize_to_i64(body.len()));
-        Ok(GitHubHttpPayload {
-            status,
-            content_type,
-            body,
-            headers,
-        })
+            span_for_record.record("status_code", i64::from(status.as_u16()));
+            span_for_record.record("body_bytes", usize_to_i64(body.len()));
+            Ok(GitHubHttpPayload {
+                status,
+                content_type,
+                body,
+                headers,
+            })
+        }
+        .instrument(exchange_span)
+        .await
     }
 
     pub(super) fn decode_github_json<T: for<'de> Deserialize<'de>>(
@@ -223,13 +226,6 @@ impl GitHubSource {
         let per_page = Self::bounded_per_page(per_page);
 
         loop {
-            let _page_span = debug_span!(
-                "github.page.fetch",
-                operation = "page fetch",
-                page,
-                per_page
-            )
-            .entered();
             debug!(url = %url, page, per_page, "fetching GitHub page");
             let req = self.client.get(url).query(&[
                 ("per_page", per_page.to_string()),
@@ -244,11 +240,7 @@ impl GitHubSource {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|l| l.contains(r#"rel=\"next\""#));
 
-            let items: Vec<T> = {
-                let _decode_span =
-                    debug_span!("github.page.decode", operation = "page fetch").entered();
-                Self::decode_github_json(&payload, token, "page fetch")?
-            };
+            let items: Vec<T> = Self::decode_github_json(&payload, token, "page fetch")?;
             trace!(count = items.len(), page, "decoded GitHub page");
             let done = items.is_empty() || !has_next;
             results.extend(items);
@@ -271,14 +263,18 @@ impl GitHubSource {
             "github.hydrate.issue_comments",
             github.comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/comments");
-        let raw_comments: Vec<IssueCommentItem> = self
-            .get_pages(&comments_url, req.token.as_deref(), req.per_page)
-            .await?;
-        let comments: Vec<Comment> = raw_comments.into_iter().map(map_issue_comment).collect();
-        span.record("github.comments.count", usize_to_i64(comments.len()));
-        Ok(comments)
+        let span_for_record = span.clone();
+        async {
+            let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/comments");
+            let raw_comments: Vec<IssueCommentItem> = self
+                .get_pages(&comments_url, req.token.as_deref(), req.per_page)
+                .await?;
+            let comments: Vec<Comment> = raw_comments.into_iter().map(map_issue_comment).collect();
+            span_for_record.record("github.comments.count", usize_to_i64(comments.len()));
+            Ok(comments)
+        }
+        .instrument(span)
+        .await
     }
 
     pub(super) async fn fetch_review_comments(
@@ -291,144 +287,130 @@ impl GitHubSource {
             "github.hydrate.review_comments",
             github.review_comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{id}/comments");
-        let raw_comments: Vec<ReviewCommentItem> = self
-            .get_pages(&comments_url, req.token.as_deref(), req.per_page)
-            .await?;
-        let comments: Vec<Comment> = raw_comments.into_iter().map(map_review_comment).collect();
-        span.record("github.review_comments.count", usize_to_i64(comments.len()));
-        Ok(comments)
+        let span_for_record = span.clone();
+        async {
+            let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{id}/comments");
+            let raw_comments: Vec<ReviewCommentItem> = self
+                .get_pages(&comments_url, req.token.as_deref(), req.per_page)
+                .await?;
+            let comments: Vec<Comment> = raw_comments.into_iter().map(map_review_comment).collect();
+            span_for_record.record("github.review_comments.count", usize_to_i64(comments.len()));
+            Ok(comments)
+        }
+        .instrument(span)
+        .await
     }
 
     pub(super) async fn fetch_links(
         &self,
         repo: &str,
         id: u64,
-        is_pr: bool,
+        is_pr: Option<bool>,
+        pull_request: Option<&PullRequestMarker>,
         req: &FetchRequest,
     ) -> ConversationMetadata {
         let span = debug_span!(
             "github.hydrate.links",
-            is_pr,
+            is_pr = is_pr.unwrap_or(false),
+            is_pr_known = is_pr.is_some(),
             github.links.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        if !req.include_links {
-            return ConversationMetadata::empty();
-        }
-
-        let mut links: Vec<ConversationLink> = Vec::new();
-        let timeline_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/timeline");
-        let timeline_result = {
-            let _timeline_span = debug_span!("github.links.timeline").entered();
-            self.get_pages::<serde_json::Value>(&timeline_url, req.token.as_deref(), req.per_page)
-                .await
-        };
-        match timeline_result {
-            Ok(events) => {
-                for event in events {
-                    links.extend(map_timeline_links(&event));
-                }
+        let span_for_record = span.clone();
+        async {
+            if !req.include_links {
+                return ConversationMetadata::empty();
             }
-            Err(err) => warn!(repo, id, error = %err, "GitHub timeline link fetch failed"),
-        }
 
-        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}");
-        let issue_result = {
-            let _issue_span = debug_span!("github.links.issue_detail").entered();
-            self.get_one::<serde_json::Value>(&issue_url, req.token.as_deref())
-                .await
-        };
-        match issue_result {
-            Ok(Some(issue)) => links.extend(map_issue_url_links(&issue)),
-            Ok(None) => {}
-            Err(err) => warn!(repo, id, error = %err, "GitHub issue detail link fetch failed"),
-        }
+            let mut links: Vec<ConversationLink> = map_pull_request_links(pull_request);
+            let token = req.token.as_deref();
+            let per_page = req.per_page;
+            let timeline_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/timeline");
+            let blocked_by_url =
+                format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocked_by");
+            let blocking_url =
+                format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocking");
+            let sub_issues_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/sub_issues");
+            let parent_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/parent");
 
-        let blocked_by_url =
-            format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocked_by");
-        let blocked_by_result = {
-            let _blocked_by_span = debug_span!("github.links.blocked_by").entered();
-            self.get_pages::<serde_json::Value>(&blocked_by_url, req.token.as_deref(), req.per_page)
-                .await
-        };
-        match blocked_by_result {
-            Ok(blocked_by) => links.extend(map_issue_collection_links(&blocked_by, "blocked_by")),
-            Err(err) => warn!(repo, id, error = %err, "GitHub blocked_by dependency fetch failed"),
-        }
+            let timeline_task = self
+                .get_pages::<serde_json::Value>(&timeline_url, token, per_page)
+                .instrument(debug_span!("github.links.timeline"));
+            let blocked_by_task = self
+                .get_pages::<serde_json::Value>(&blocked_by_url, token, per_page)
+                .instrument(debug_span!("github.links.blocked_by"));
+            let blocking_task = self
+                .get_pages::<serde_json::Value>(&blocking_url, token, per_page)
+                .instrument(debug_span!("github.links.blocking"));
+            let sub_issues_task = self
+                .get_pages::<serde_json::Value>(&sub_issues_url, token, per_page)
+                .instrument(debug_span!("github.links.sub_issues"));
+            let parent_task = self
+                .get_one::<serde_json::Value>(&parent_url, token, "parent fetch")
+                .instrument(debug_span!("github.links.parent"));
+            let graphql_task = self
+                .fetch_graphql_links(repo, id, is_pr, token)
+                .instrument(debug_span!("github.links.graphql"));
 
-        let blocking_url =
-            format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/dependencies/blocking");
-        let blocking_result = {
-            let _blocking_span = debug_span!("github.links.blocking").entered();
-            self.get_pages::<serde_json::Value>(&blocking_url, req.token.as_deref(), req.per_page)
-                .await
-        };
-        match blocking_result {
-            Ok(blocking) => links.extend(map_issue_collection_links(&blocking, "blocks")),
-            Err(err) => warn!(repo, id, error = %err, "GitHub blocking dependency fetch failed"),
-        }
+            let (
+                timeline_result,
+                blocked_by_result,
+                blocking_result,
+                sub_issues_result,
+                parent_result,
+                graphql_result,
+            ) = tokio::join!(
+                timeline_task,
+                blocked_by_task,
+                blocking_task,
+                sub_issues_task,
+                parent_task,
+                graphql_task
+            );
 
-        let sub_issues_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/sub_issues");
-        let sub_issues_result = {
-            let _sub_issues_span = debug_span!("github.links.sub_issues").entered();
-            self.get_pages::<serde_json::Value>(&sub_issues_url, req.token.as_deref(), req.per_page)
-                .await
-        };
-        match sub_issues_result {
-            Ok(sub_issues) => links.extend(map_issue_collection_links(&sub_issues, "child")),
-            Err(err) => warn!(repo, id, error = %err, "GitHub sub-issues fetch failed"),
-        }
-
-        let parent_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{id}/parent");
-        let parent_result = {
-            let _parent_span = debug_span!("github.links.parent").entered();
-            self.get_one::<serde_json::Value>(&parent_url, req.token.as_deref())
-                .await
-        };
-        match parent_result {
-            Ok(Some(parent)) => {
-                links.extend(map_issue_collection_links(
-                    std::slice::from_ref(&parent),
-                    "parent",
-                ));
+            merge_timeline_links(&mut links, timeline_result, repo, id);
+            for (result, relation, warning) in [
+                (
+                    blocked_by_result,
+                    "blocked_by",
+                    "GitHub blocked_by dependency fetch failed",
+                ),
+                (
+                    blocking_result,
+                    "blocks",
+                    "GitHub blocking dependency fetch failed",
+                ),
+                (sub_issues_result, "child", "GitHub sub-issues fetch failed"),
+            ] {
+                merge_issue_collection_links(&mut links, result, relation, repo, id, warning);
             }
-            Ok(None) => {}
-            Err(err) => warn!(repo, id, error = %err, "GitHub parent issue fetch failed"),
-        }
+            merge_parent_links(&mut links, parent_result, repo, id);
+            merge_graphql_links(&mut links, graphql_result, repo, id);
 
-        let graphql_result = {
-            let _graphql_span = debug_span!("github.links.graphql").entered();
-            self.fetch_graphql_links(repo, id, is_pr, req.token.as_deref())
-                .await
-        };
-        match graphql_result {
-            Ok(graph_links) => links.extend(graph_links),
-            Err(err) => warn!(repo, id, error = %err, "GitHub GraphQL links fetch failed"),
+            span_for_record.record("github.links.count", usize_to_i64(links.len()));
+            ConversationMetadata::with_links(links)
         }
-
-        span.record("github.links.count", usize_to_i64(links.len()));
-        ConversationMetadata::with_links(links)
+        .instrument(span)
+        .await
     }
 
     pub(super) async fn get_one<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
         token: Option<&str>,
+        operation: &str,
     ) -> Result<Option<T>> {
-        let _span = debug_span!("github.single.fetch", operation = "single fetch").entered();
         let req = Self::apply_auth(self.client.get(url), token);
-        let payload = Self::execute_request(req, "single fetch", "reqwest.http.get").await?;
+        let payload = Self::execute_request(req, operation, "reqwest.http.get").await?;
         if payload.status == StatusCode::NOT_FOUND {
+            trace!(
+                operation,
+                url = %url,
+                "GitHub endpoint returned 404; treating as empty result"
+            );
             return Ok(None);
         }
 
-        let item = {
-            let _decode_span =
-                debug_span!("github.single.decode", operation = "single fetch").entered();
-            Self::decode_github_json(&payload, token, "single fetch")?
-        };
+        let item = Self::decode_github_json(&payload, token, operation)?;
         Ok(Some(item))
     }
 
@@ -436,26 +418,22 @@ impl GitHubSource {
         &self,
         repo: &str,
         id: u64,
-        is_pr: bool,
+        is_pr: Option<bool>,
         token: Option<&str>,
     ) -> Result<Vec<ConversationLink>> {
         let Some((owner, name)) = repo.split_once('/') else {
             return Ok(Vec::new());
         };
-        let (query, relation, kind, path) = if is_pr {
-            (
-                "query($owner:String!,$name:String!,$n:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$n){ closingIssuesReferences(first:100){nodes{number url}} } } }",
-                "closes",
-                "issue",
-                "/data/repository/pullRequest/closingIssuesReferences/nodes",
-            )
-        } else {
-            (
-                "query($owner:String!,$name:String!,$n:Int!){ repository(owner:$owner,name:$name){ issue(number:$n){ closedByPullRequestsReferences(first:100){nodes{number url}} } } }",
-                "closed_by",
-                "pr",
-                "/data/repository/issue/closedByPullRequestsReferences/nodes",
-            )
+        let query = match is_pr {
+            Some(true) => {
+                "query($owner:String!,$name:String!,$n:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$n){ closingIssuesReferences(first:100){nodes{number url}} } } }"
+            }
+            Some(false) => {
+                "query($owner:String!,$name:String!,$n:Int!){ repository(owner:$owner,name:$name){ issue(number:$n){ closedByPullRequestsReferences(first:100){nodes{number url}} } } }"
+            }
+            None => {
+                "query($owner:String!,$name:String!,$n:Int!){ repository(owner:$owner,name:$name){ issue(number:$n){ closedByPullRequestsReferences(first:100){nodes{number url}} } pullRequest(number:$n){ closingIssuesReferences(first:100){nodes{number url}} } } }"
+            }
         };
 
         let body = serde_json::json!({
@@ -470,27 +448,34 @@ impl GitHubSource {
         let request = Self::apply_auth(self.client.post("https://api.github.com/graphql"), token)
             .header("Content-Type", "application/json")
             .json(&body);
-        let payload = {
-            let _send_span =
-                debug_span!("github.graphql.send", operation = "graphql fetch").entered();
-            Self::execute_request(request, "graphql fetch", "reqwest.http.post").await?
-        };
-        let payload: serde_json::Value = {
-            let _decode_span =
-                debug_span!("github.graphql.decode", operation = "graphql fetch").entered();
-            Self::decode_github_json(&payload, token, "graphql fetch")?
-        };
+        let payload = Self::execute_request(request, "graphql fetch", "reqwest.http.post").await?;
+        let payload: serde_json::Value =
+            Self::decode_github_json(&payload, token, "graphql fetch")?;
         if let Some(errors) = payload.get("errors") {
             return Err(
                 AppError::provider(format!("GitHub GraphQL returned errors: {errors}")).into(),
             );
         }
-        let nodes = payload
-            .pointer(path)
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(map_graphql_link_nodes(&nodes, relation, kind))
+
+        let mut links = Vec::new();
+        if is_pr != Some(true) {
+            let issue_nodes = payload
+                .pointer("/data/repository/issue/closedByPullRequestsReferences/nodes")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            links.extend(map_graphql_link_nodes(&issue_nodes, "closed_by", "pr"));
+        }
+        if is_pr != Some(false) {
+            let pr_nodes = payload
+                .pointer("/data/repository/pullRequest/closingIssuesReferences/nodes")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            links.extend(map_graphql_link_nodes(&pr_nodes, "closes", "issue"));
+        }
+
+        Ok(links)
     }
 
     pub(super) async fn fetch_conversation(
@@ -499,40 +484,219 @@ impl GitHubSource {
         item: ConversationSeed,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let _span = debug_span!(
-            "github.hydrate.conversation",
-            include_comments = req.include_comments,
-            include_review_comments = req.include_review_comments,
-            include_links = req.include_links,
-            is_pr = item.is_pr
+        let ConversationSeed {
+            id,
+            title,
+            state,
+            body,
+            is_pr,
+            pull_request,
+        } = item;
+        Box::pin(
+            async {
+                let comments_task = async {
+                    if !req.include_comments {
+                        return Ok::<Vec<Comment>, anyhow::Error>(Vec::new());
+                    }
+                    let mut comments = self.fetch_issue_comments(repo, id, req).await?;
+                    if is_pr && req.include_review_comments {
+                        comments.extend(self.fetch_review_comments(repo, id, req).await?);
+                        comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                    }
+                    Ok::<Vec<Comment>, anyhow::Error>(comments)
+                };
+                let metadata_task = async {
+                    if req.include_links {
+                        self.fetch_links(repo, id, Some(is_pr), pull_request.as_ref(), req)
+                            .await
+                    } else {
+                        ConversationMetadata::empty()
+                    }
+                };
+                let (comments_result, metadata) = tokio::join!(comments_task, metadata_task);
+                let comments = comments_result?;
+
+                Ok(Conversation {
+                    id: id.to_string(),
+                    title,
+                    state,
+                    body,
+                    comments,
+                    metadata,
+                })
+            }
+            .instrument(debug_span!(
+                "github.hydrate.issue",
+                include_comments = req.include_comments,
+                include_review_comments = req.include_review_comments,
+                include_links = req.include_links,
+                is_pr
+            )),
         )
-        .entered();
-        let mut comments = Vec::new();
-        if req.include_comments {
-            let _issue_comments_span = debug_span!("github.hydrate.issue_comments.stage").entered();
-            comments = self.fetch_issue_comments(repo, item.id, req).await?;
-            if item.is_pr && req.include_review_comments {
-                let _review_comments_span =
-                    debug_span!("github.hydrate.review_comments.stage").entered();
-                comments.extend(self.fetch_review_comments(repo, item.id, req).await?);
-                comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        .await
+    }
+
+    pub(super) async fn fetch_conversation_by_id(
+        &self,
+        repo: &str,
+        issue_id: u64,
+        kind: ContentKind,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
+        Box::pin(
+            async {
+                let issue_task = self
+                    .fetch_issue_seed(repo, issue_id, req)
+                    .instrument(debug_span!("github.hydrate.issue_body"));
+                let issue_comments_task = async {
+                    if req.include_comments {
+                        self.fetch_issue_comments(repo, issue_id, req).await
+                    } else {
+                        Ok(Vec::new())
+                    }
+                };
+                let links_task = async {
+                    if req.include_links {
+                        self.fetch_links(repo, issue_id, None, None, req).await
+                    } else {
+                        ConversationMetadata::empty()
+                    }
+                };
+                let (issue_result, issue_comments_result, metadata) =
+                    tokio::join!(issue_task, issue_comments_task, links_task);
+
+                let seed = issue_result?;
+                Self::validate_issue_kind(repo, issue_id, kind, seed.is_pr)?;
+                let mut comments = issue_comments_result?;
+                let mut links = metadata.links;
+
+                if seed.is_pr && req.include_comments && req.include_review_comments {
+                    comments.extend(self.fetch_review_comments(repo, seed.id, req).await?);
+                    comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                }
+
+                if req.include_links {
+                    links.extend(map_pull_request_links(seed.pull_request.as_ref()));
+                }
+
+                Ok(Conversation {
+                    id: seed.id.to_string(),
+                    title: seed.title,
+                    state: seed.state,
+                    body: seed.body,
+                    comments,
+                    metadata: ConversationMetadata::with_links(links),
+                })
+            }
+            .instrument(debug_span!(
+                "github.hydrate.issue",
+                include_comments = req.include_comments,
+                include_review_comments = req.include_review_comments,
+                include_links = req.include_links
+            )),
+        )
+        .await
+    }
+
+    async fn fetch_issue_seed(
+        &self,
+        repo: &str,
+        issue_id: u64,
+        req: &FetchRequest,
+    ) -> Result<ConversationSeed> {
+        let issue_url = format!("{GITHUB_API_BASE}/repos/{repo}/issues/{issue_id}");
+        let request = Self::apply_auth(self.client.get(&issue_url), req.token.as_deref());
+        let payload = Self::execute_request(request, "issue fetch", "reqwest.http.get").await?;
+        let issue: IssueItem =
+            Self::decode_github_json(&payload, req.token.as_deref(), "issue fetch")?;
+
+        Ok(ConversationSeed {
+            id: issue.number,
+            title: issue.title,
+            state: issue.state,
+            body: issue.body,
+            is_pr: issue.pull_request.is_some(),
+            pull_request: issue.pull_request,
+        })
+    }
+
+    fn validate_issue_kind(
+        repo: &str,
+        issue_id: u64,
+        kind: ContentKind,
+        is_pr: bool,
+    ) -> Result<()> {
+        match kind {
+            ContentKind::Issue if is_pr => Err(AppError::usage(format!(
+                "ID {issue_id} in repo {repo} is a pull request. Use --type pr or omit --type."
+            ))
+            .into()),
+            ContentKind::Pr if !is_pr => Err(AppError::usage(format!(
+                "ID {issue_id} in repo {repo} is an issue, not a pull request."
+            ))
+            .into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn merge_timeline_links(
+    links: &mut Vec<ConversationLink>,
+    result: Result<Vec<serde_json::Value>>,
+    repo: &str,
+    id: u64,
+) {
+    match result {
+        Ok(events) => {
+            for event in events {
+                links.extend(map_timeline_links(&event));
             }
         }
-        let metadata = if req.include_links {
-            let _links_span = debug_span!("github.hydrate.links.stage").entered();
-            self.fetch_links(repo, item.id, item.is_pr, req).await
-        } else {
-            ConversationMetadata::empty()
-        };
+        Err(err) => warn!(repo, id, error = %err, "GitHub timeline link fetch failed"),
+    }
+}
 
-        Ok(Conversation {
-            id: item.id.to_string(),
-            title: item.title,
-            state: item.state,
-            body: item.body,
-            comments,
-            metadata,
-        })
+fn merge_issue_collection_links(
+    links: &mut Vec<ConversationLink>,
+    result: Result<Vec<serde_json::Value>>,
+    relation: &str,
+    repo: &str,
+    id: u64,
+    warning: &str,
+) {
+    match result {
+        Ok(items) => links.extend(map_issue_collection_links(&items, relation)),
+        Err(err) => warn!(repo, id, error = %err, "{warning}"),
+    }
+}
+
+fn merge_parent_links(
+    links: &mut Vec<ConversationLink>,
+    result: Result<Option<serde_json::Value>>,
+    repo: &str,
+    id: u64,
+) {
+    match result {
+        Ok(Some(parent)) => {
+            links.extend(map_issue_collection_links(
+                std::slice::from_ref(&parent),
+                "parent",
+            ));
+        }
+        Ok(None) => {}
+        Err(err) => warn!(repo, id, error = %err, "GitHub parent issue fetch failed"),
+    }
+}
+
+fn merge_graphql_links(
+    links: &mut Vec<ConversationLink>,
+    result: Result<Vec<ConversationLink>>,
+    repo: &str,
+    id: u64,
+) {
+    match result {
+        Ok(graph_links) => links.extend(graph_links),
+        Err(err) => warn!(repo, id, error = %err, "GitHub GraphQL links fetch failed"),
     }
 }
 

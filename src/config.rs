@@ -15,6 +15,7 @@ pub struct InstanceConfig {
     pub state: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    pub type_default: Option<String>,
     pub deployment: Option<String>,
     pub per_page: Option<u32>,
 }
@@ -131,6 +132,10 @@ fn merge_instance(base: &InstanceConfig, override_cfg: &InstanceConfig) -> Insta
         repo: override_cfg.repo.clone().or_else(|| base.repo.clone()),
         state: override_cfg.state.clone().or_else(|| base.state.clone()),
         kind: override_cfg.kind.clone().or_else(|| base.kind.clone()),
+        type_default: override_cfg
+            .type_default
+            .clone()
+            .or_else(|| base.type_default.clone()),
         deployment: override_cfg
             .deployment
             .clone()
@@ -307,6 +312,8 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
         (kind.to_string(), true)
     } else if let Some(kind) = instance.kind.as_deref() {
         (kind.to_string(), true)
+    } else if let Some(kind) = instance.type_default.as_deref() {
+        (kind.to_string(), false)
     } else {
         ("issue".to_string(), false)
     };
@@ -499,6 +506,7 @@ fn validate_instance_keys(table: &toml::value::Table) -> Result<()> {
                     | "repo"
                     | "state"
                     | "type"
+                    | "type_default"
                     | "deployment"
                     | "per_page"
             ) {
@@ -720,6 +728,37 @@ mod tests {
     }
 
     #[test]
+    fn instance_type_default_sets_implicit_kind() {
+        let cfg = resolve_with_opts(
+            r#"
+            [instances.work]
+            platform = "gitlab"
+            type_default = "pr"
+            "#,
+            ResolveOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(cfg.kind, "pr");
+        assert!(!cfg.kind_explicit);
+    }
+
+    #[test]
+    fn instance_type_wins_over_type_default() {
+        let cfg = resolve_with_opts(
+            r#"
+            [instances.work]
+            platform = "gitlab"
+            type = "issue"
+            type_default = "pr"
+            "#,
+            ResolveOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(cfg.kind, "issue");
+        assert!(cfg.kind_explicit);
+    }
+
+    #[test]
     fn cli_only_mode_without_instances_works() {
         let cfg = resolve_from_dotfiles(
             DotfileConfig::default(),
@@ -752,6 +791,7 @@ mod tests {
                     repo: Some("group/home".to_string()),
                     state: None,
                     kind: None,
+                    type_default: None,
                     deployment: None,
                     per_page: Some(20),
                 },
@@ -770,6 +810,7 @@ mod tests {
                     repo: Some("group/local".to_string()),
                     state: Some("opened".to_string()),
                     kind: Some("pr".to_string()),
+                    type_default: None,
                     deployment: None,
                     per_page: None,
                 },

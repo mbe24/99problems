@@ -143,6 +143,14 @@ fn validate_set_value(key: &ConfigKey, raw_value: &str) -> Result<()> {
                 "issue" | "pr" => {}
                 _ => return Err(anyhow!("Invalid type '{raw_value}'. Supported: issue, pr.")),
             },
+            InstanceField::TypeDefault => match raw_value {
+                "issue" | "pr" => {}
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid type_default '{raw_value}'. Supported: issue, pr."
+                    ));
+                }
+            },
             InstanceField::PerPage => {
                 let parsed: u32 = raw_value.parse()?;
                 if parsed == 0 {

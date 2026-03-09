@@ -1,4 +1,5 @@
 use anyhow::Result;
+use tracing::Instrument;
 
 use self::model::{
     BitbucketCommentItem, BitbucketPullRequestItem, map_pr_comment, map_url_links,
@@ -21,12 +22,9 @@ impl BitbucketSource {
     ) -> Result<usize> {
         match &req.target {
             FetchTarget::Search { raw_query } => self.search_stream(req, raw_query, emit).await,
-            FetchTarget::Id {
-                repo,
-                id,
-                kind,
-                allow_fallback_to_pr: _,
-            } => self.fetch_by_id_stream(req, repo, id, *kind, emit).await,
+            FetchTarget::Id { repo, id, kind } => {
+                self.fetch_by_id_stream(req, repo, id, *kind, emit).await
+            }
         }
     }
 
@@ -98,14 +96,8 @@ impl BitbucketSource {
             )
             .into()),
             ContentKind::Pr => {
-                if let Some(pr) = self.fetch_pr_by_id(&repo, id, req).await? {
-                    emit(self.fetch_pr_conversation(&repo, pr, req).await?)?;
-                    return Ok(1);
-                }
-                Err(
-                    AppError::not_found(format!("Pull request #{id} not found in repo {repo}."))
-                        .into(),
-                )
+                emit(self.fetch_pr_conversation_by_id(&repo, id, req).await?)?;
+                Ok(1)
             }
         }
     }
@@ -127,27 +119,93 @@ impl BitbucketSource {
         item: BitbucketPullRequestItem,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let comments = if req.include_comments {
-            self.fetch_pr_comments(repo, item.id, req).await?
-        } else {
-            Vec::new()
-        };
-        let body = item
-            .description
-            .or_else(|| item.summary.and_then(|s| s.raw))
-            .filter(|b| !b.is_empty());
-        Ok(Conversation {
-            id: item.id.to_string(),
-            title: item.title,
-            state: item.state,
-            body,
-            comments,
-            metadata: if req.include_links {
-                ConversationMetadata::with_links(map_url_links(item.links.as_ref()))
+        let span = tracing::debug_span!(
+            "bitbucket.hydrate.issue",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = true
+        );
+        async {
+            let comments = if req.include_comments {
+                self.fetch_pr_comments(repo, item.id, req).await?
             } else {
-                ConversationMetadata::empty()
-            },
-        })
+                Vec::new()
+            };
+            let body = item
+                .description
+                .or_else(|| item.summary.and_then(|s| s.raw))
+                .filter(|b| !b.is_empty());
+            Ok(Conversation {
+                id: item.id.to_string(),
+                title: item.title,
+                state: item.state,
+                body,
+                comments,
+                metadata: if req.include_links {
+                    ConversationMetadata::with_links(map_url_links(item.links.as_ref()))
+                } else {
+                    ConversationMetadata::empty()
+                },
+            })
+        }
+        .instrument(span.clone())
+        .await
+    }
+
+    async fn fetch_pr_conversation_by_id(
+        &self,
+        repo: &str,
+        id: u64,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
+        let span = tracing::debug_span!(
+            "bitbucket.hydrate.issue",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr = true
+        );
+        async {
+            let pr_task = self.fetch_pr_by_id(repo, id, req);
+            let comments_task = async {
+                if req.include_comments {
+                    self.fetch_pr_comments(repo, id, req).await
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+            let (pr_result, comments_result) = tokio::join!(pr_task, comments_task);
+            let pr = match pr_result? {
+                Some(pr) => pr,
+                None => {
+                    return Err(AppError::not_found(format!(
+                        "Pull request #{id} not found in repo {repo}."
+                    ))
+                    .into());
+                }
+            };
+
+            let comments = comments_result?;
+            let body = pr
+                .description
+                .or_else(|| pr.summary.and_then(|s| s.raw))
+                .filter(|b| !b.is_empty());
+            Ok(Conversation {
+                id: pr.id.to_string(),
+                title: pr.title,
+                state: pr.state,
+                body,
+                comments,
+                metadata: if req.include_links {
+                    ConversationMetadata::with_links(map_url_links(pr.links.as_ref()))
+                } else {
+                    ConversationMetadata::empty()
+                },
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn fetch_pr_comments(
@@ -160,29 +218,32 @@ impl BitbucketSource {
             "bitbucket.hydrate.issue_comments",
             bitbucket.comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let url = format!(
-            "{}/repositories/{repo}/pullrequests/{id}/comments",
-            self.base_url
-        );
-        let items: Vec<BitbucketCommentItem> = self
-            .cloud_get_pages(&url, &[], req.token.as_deref(), req.per_page)
-            .await?;
+        async {
+            let url = format!(
+                "{}/repositories/{repo}/pullrequests/{id}/comments",
+                self.base_url
+            );
+            let items: Vec<BitbucketCommentItem> = self
+                .cloud_get_pages(&url, &[], req.token.as_deref(), req.per_page)
+                .await?;
 
-        let mut comments = Vec::new();
-        for item in items {
-            if item.deleted.unwrap_or(false) {
-                continue;
+            let mut comments = Vec::new();
+            for item in items {
+                if item.deleted.unwrap_or(false) {
+                    continue;
+                }
+                if let Some(mapped) = map_pr_comment(item, req.include_review_comments) {
+                    comments.push(mapped);
+                }
             }
-            if let Some(mapped) = map_pr_comment(item, req.include_review_comments) {
-                comments.push(mapped);
-            }
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            span.record(
+                "bitbucket.comments.count",
+                i64::try_from(comments.len()).unwrap_or(i64::MAX),
+            );
+            Ok(comments)
         }
-        comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        span.record(
-            "bitbucket.comments.count",
-            i64::try_from(comments.len()).unwrap_or(i64::MAX),
-        );
-        Ok(comments)
+        .instrument(span.clone())
+        .await
     }
 }

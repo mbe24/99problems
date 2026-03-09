@@ -55,7 +55,6 @@ pub enum FetchTarget {
         repo: String,
         id: String,
         kind: ContentKind,
-        allow_fallback_to_pr: bool,
     },
 }
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest_middleware::{ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware};
-use tracing::debug_span;
+use tracing::{Instrument, debug_span};
 
 use super::{FetchRequest, Source};
 use crate::error::AppError;
@@ -107,10 +107,13 @@ impl Source for BitbucketSource {
         req: &FetchRequest,
         emit: &mut dyn FnMut(Conversation) -> Result<()>,
     ) -> Result<usize> {
-        let _span = debug_span!("bitbucket.fetch_stream").entered();
-        match self.deployment {
-            BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit).await,
-            BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit).await,
+        async {
+            match self.deployment {
+                BitbucketDeployment::Cloud => self.fetch_cloud_stream(req, emit).await,
+                BitbucketDeployment::Selfhosted => self.fetch_datacenter_stream(req, emit).await,
+            }
         }
+        .instrument(debug_span!("bitbucket.fetch_stream"))
+        .await
     }
 }

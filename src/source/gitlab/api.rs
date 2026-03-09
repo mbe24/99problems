@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use reqwest_middleware::RequestBuilder;
 use serde::Deserialize;
-use tracing::{debug, debug_span, trace, warn};
+use tracing::{Instrument, debug, debug_span, trace, warn};
 
 use super::model::{
     ConversationSeed, GitLabDiscussion, GitLabIssueItem, GitLabIssueLinkItem,
@@ -17,13 +17,28 @@ use super::query::encode_project_path;
 use super::{GitLabSource, PAGE_SIZE};
 use crate::error::{AppError, app_error_from_decode, app_error_from_reqwest};
 use crate::model::{Comment, Conversation, ConversationLink, ConversationMetadata};
-use crate::source::FetchRequest;
+use crate::source::{ContentKind, FetchRequest};
 
 pub(super) struct GitLabHttpPayload {
     status: StatusCode,
     content_type: String,
     body: String,
     headers: HeaderMap,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GitLabPageContext {
+    page_kind: &'static str,
+    operation: &'static str,
+}
+
+impl GitLabPageContext {
+    pub(super) const fn new(page_kind: &'static str, operation: &'static str) -> Self {
+        Self {
+            page_kind,
+            operation,
+        }
+    }
 }
 
 impl GitLabSource {
@@ -86,11 +101,11 @@ impl GitLabSource {
             error.type = tracing::field::Empty,
             error.message = tracing::field::Empty
         );
-        let _exchange_guard = exchange_span.enter();
-        let response = {
-            let _request_span = debug_span!("gitlab.http.request", operation = operation).entered();
-            Self::apply_otel_span_name(req, span_name).send().await
-        };
+        let response = Self::apply_otel_span_name(req, span_name)
+            .send()
+            .instrument(debug_span!("gitlab.http.request", operation = operation))
+            .instrument(exchange_span.clone())
+            .await;
         let response = match response {
             Ok(response) => response,
             Err(err) => {
@@ -116,9 +131,13 @@ impl GitLabSource {
                 error.type = tracing::field::Empty,
                 error.message = tracing::field::Empty
             );
-            let _read_guard = read_span.enter();
             read_span.record("status_code", i64::from(status.as_u16()));
-            match response.text().await {
+            match response
+                .text()
+                .instrument(read_span.clone())
+                .instrument(exchange_span.clone())
+                .await
+            {
                 Ok(body) => body,
                 Err(err) => {
                     let error_message = err.to_string();
@@ -223,26 +242,31 @@ impl GitLabSource {
         token: Option<&str>,
         per_page: u32,
         allow_unauthenticated_empty: bool,
+        context: GitLabPageContext,
     ) -> Result<Vec<T>> {
         let mut results = vec![];
         let mut page = 1u32;
         let per_page = Self::bounded_per_page(per_page);
+        let page_kind = context.page_kind;
+        let operation = context.operation;
 
         loop {
-            let _page_span = debug_span!(
+            let page_span = debug_span!(
                 "gitlab.page.fetch",
-                operation = "page fetch",
+                operation = operation,
+                page_kind = page_kind,
                 page,
                 per_page
-            )
-            .entered();
+            );
             let mut query = params.to_vec();
             query.push(("per_page".into(), per_page.to_string()));
             query.push(("page".into(), page.to_string()));
-            debug!(url = %url, page, per_page, "fetching GitLab page");
+            page_span.in_scope(|| debug!(url = %url, page, per_page, "fetching GitLab page"));
 
             let req = Self::apply_auth(self.client.get(url).query(&query), token);
-            let payload = Self::execute_request(req, "page fetch", "reqwest.http.get").await?;
+            let payload = Self::execute_request(req, operation, "reqwest.http.get")
+                .instrument(page_span.clone())
+                .await?;
 
             if !payload.status.is_success() {
                 if allow_unauthenticated_empty
@@ -271,7 +295,7 @@ impl GitLabSource {
                 }
                 return Err(AppError::from_http(
                     "GitLab",
-                    "page fetch",
+                    operation,
                     payload.status,
                     &payload.body,
                 )
@@ -287,12 +311,15 @@ impl GitLabSource {
                 .trim()
                 .to_string();
 
-            let items: Vec<T> = {
-                let _decode_span =
-                    debug_span!("gitlab.page.decode", operation = "page fetch").entered();
-                Self::decode_gitlab_json(&payload, token, "page fetch")?
-            };
-            trace!(count = items.len(), page, "decoded GitLab page");
+            let items: Vec<T> = page_span.in_scope(|| {
+                debug_span!(
+                    "gitlab.page.decode",
+                    operation = operation,
+                    page_kind = page_kind
+                )
+                .in_scope(|| Self::decode_gitlab_json(&payload, token, operation))
+            })?;
+            page_span.in_scope(|| trace!(count = items.len(), page, "decoded GitLab page"));
             results.extend(items);
 
             if next_page.is_empty() {
@@ -309,21 +336,25 @@ impl GitLabSource {
         &self,
         url: &str,
         token: Option<&str>,
+        operation: &'static str,
     ) -> Result<Option<T>> {
-        let _span = debug_span!("gitlab.single.fetch", operation = "single fetch").entered();
-        let req = Self::apply_auth(self.client.get(url), token);
-        let payload = Self::execute_request(req, "single fetch", "reqwest.http.get").await?;
+        let single_span = debug_span!("gitlab.single.fetch", operation = operation);
+        async {
+            let req = Self::apply_auth(self.client.get(url), token);
+            let payload = Self::execute_request(req, operation, "reqwest.http.get")
+                .instrument(single_span.clone())
+                .await?;
 
-        if payload.status == StatusCode::NOT_FOUND {
-            return Ok(None);
+            if payload.status == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+
+            let item = debug_span!("gitlab.single.decode", operation = operation)
+                .in_scope(|| Self::decode_gitlab_json(&payload, token, operation))?;
+            Ok(Some(item))
         }
-
-        let item = {
-            let _decode_span =
-                debug_span!("gitlab.single.decode", operation = "single fetch").entered();
-            Self::decode_gitlab_json(&payload, token, "single fetch")?
-        };
-        Ok(Some(item))
+        .instrument(single_span.clone())
+        .await
     }
 
     pub(super) async fn fetch_notes(
@@ -338,30 +369,40 @@ impl GitLabSource {
             is_pr,
             gitlab.comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let project = encode_project_path(repo);
-        let url = if is_pr {
-            format!(
-                "{}/api/v4/projects/{project}/merge_requests/{iid}/notes",
-                self.base_url
-            )
-        } else {
-            format!(
-                "{}/api/v4/projects/{project}/issues/{iid}/notes",
-                self.base_url
-            )
-        };
+        async {
+            let project = encode_project_path(repo);
+            let url = if is_pr {
+                format!(
+                    "{}/api/v4/projects/{project}/merge_requests/{iid}/notes",
+                    self.base_url
+                )
+            } else {
+                format!(
+                    "{}/api/v4/projects/{project}/issues/{iid}/notes",
+                    self.base_url
+                )
+            };
 
-        let notes: Vec<GitLabNote> = self
-            .get_pages(&url, &[], req.token.as_deref(), req.per_page, true)
-            .await?;
-        let comments: Vec<Comment> = notes
-            .into_iter()
-            .filter(|n| !n.system)
-            .map(map_note_comment)
-            .collect();
-        span.record("gitlab.comments.count", usize_to_i64(comments.len()));
-        Ok(comments)
+            let notes: Vec<GitLabNote> = self
+                .get_pages(
+                    &url,
+                    &[],
+                    req.token.as_deref(),
+                    req.per_page,
+                    true,
+                    GitLabPageContext::new("comments", "comments fetch"),
+                )
+                .await?;
+            let comments: Vec<Comment> = notes
+                .into_iter()
+                .filter(|n| !n.system)
+                .map(map_note_comment)
+                .collect();
+            span.record("gitlab.comments.count", usize_to_i64(comments.len()));
+            Ok(comments)
+        }
+        .instrument(span.clone())
+        .await
     }
 
     pub(super) async fn fetch_review_comments(
@@ -374,30 +415,40 @@ impl GitLabSource {
             "gitlab.hydrate.review_comments",
             gitlab.review_comments.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        let project = encode_project_path(repo);
-        let url = format!(
-            "{}/api/v4/projects/{project}/merge_requests/{iid}/discussions",
-            self.base_url
-        );
+        async {
+            let project = encode_project_path(repo);
+            let url = format!(
+                "{}/api/v4/projects/{project}/merge_requests/{iid}/discussions",
+                self.base_url
+            );
 
-        let discussions: Vec<GitLabDiscussion> = self
-            .get_pages(&url, &[], req.token.as_deref(), req.per_page, true)
-            .await?;
-        let mut seen = HashSet::new();
-        let mut comments = vec![];
+            let discussions: Vec<GitLabDiscussion> = self
+                .get_pages(
+                    &url,
+                    &[],
+                    req.token.as_deref(),
+                    req.per_page,
+                    true,
+                    GitLabPageContext::new("review_comments", "review comments fetch"),
+                )
+                .await?;
+            let mut seen = HashSet::new();
+            let mut comments = vec![];
 
-        for discussion in discussions {
-            for note in discussion.notes {
-                if note.system || note.position.is_none() || !seen.insert(note.id) {
-                    continue;
+            for discussion in discussions {
+                for note in discussion.notes {
+                    if note.system || note.position.is_none() || !seen.insert(note.id) {
+                        continue;
+                    }
+                    comments.push(map_review_comment(note));
                 }
-                comments.push(map_review_comment(note));
             }
-        }
 
-        span.record("gitlab.review_comments.count", usize_to_i64(comments.len()));
-        Ok(comments)
+            span.record("gitlab.review_comments.count", usize_to_i64(comments.len()));
+            Ok(comments)
+        }
+        .instrument(span.clone())
+        .await
     }
 
     pub(super) async fn fetch_links(
@@ -413,27 +464,146 @@ impl GitLabSource {
             is_pr,
             gitlab.links.count = tracing::field::Empty
         );
-        let _span_guard = span.enter();
-        if !req.include_links {
-            return ConversationMetadata::empty();
+        async {
+            if !req.include_links {
+                return ConversationMetadata::empty();
+            }
+
+            let project = encode_project_path(repo);
+            let mut links: Vec<ConversationLink> = Vec::new();
+            if let Some(url) = conversation_url {
+                links.push(map_url_reference(url));
+            }
+            if is_pr {
+                self.collect_pr_links(&project, repo, iid, req, &mut links)
+                    .await;
+            } else {
+                self.collect_issue_links(&project, repo, iid, req, &mut links)
+                    .await;
+            }
+
+            prune_redundant_relates(&mut links);
+            span.record("gitlab.links.count", usize_to_i64(links.len()));
+            ConversationMetadata::with_links(links)
+        }
+        .instrument(span.clone())
+        .await
+    }
+
+    pub(super) async fn fetch_conversation_by_id(
+        &self,
+        repo: &str,
+        iid: u64,
+        kind: ContentKind,
+        req: &FetchRequest,
+    ) -> Result<Conversation> {
+        enum SeedBody {
+            Issue(Option<GitLabIssueItem>),
+            Pr(Option<GitLabMergeRequestItem>),
         }
 
-        let project = encode_project_path(repo);
-        let mut links: Vec<ConversationLink> = Vec::new();
-        if let Some(url) = conversation_url {
-            links.push(map_url_reference(url));
-        }
-        if is_pr {
-            self.collect_pr_links(&project, repo, iid, req, &mut links)
-                .await;
-        } else {
-            self.collect_issue_links(&project, repo, iid, req, &mut links)
-                .await;
-        }
+        let is_pr = matches!(kind, ContentKind::Pr);
+        let span = debug_span!(
+            "gitlab.hydrate.issue",
+            include_comments = req.include_comments,
+            include_review_comments = req.include_review_comments,
+            include_links = req.include_links,
+            is_pr
+        );
+        async {
+            let body_task = async {
+                match kind {
+                    ContentKind::Issue => Ok::<SeedBody, anyhow::Error>(SeedBody::Issue(
+                        self.fetch_issue_by_iid(repo, iid, req.token.as_deref())
+                            .await?,
+                    )),
+                    ContentKind::Pr => Ok::<SeedBody, anyhow::Error>(SeedBody::Pr(
+                        self.fetch_mr_by_iid(repo, iid, req.token.as_deref())
+                            .await?,
+                    )),
+                }
+            }
+            .instrument(debug_span!("gitlab.hydrate.issue_body"));
+            let notes_task = async {
+                if !req.include_comments {
+                    return Ok::<Vec<Comment>, anyhow::Error>(Vec::new());
+                }
+                self.fetch_notes(repo, iid, is_pr, req).await
+            };
+            let review_comments_task = async {
+                if !req.include_comments || !is_pr || !req.include_review_comments {
+                    return Ok::<Vec<Comment>, anyhow::Error>(Vec::new());
+                }
+                self.fetch_review_comments(repo, iid, req).await
+            };
+            let metadata_task = async {
+                if req.include_links {
+                    self.fetch_links(repo, iid, is_pr, None, req).await
+                } else {
+                    ConversationMetadata::empty()
+                }
+            };
 
-        prune_redundant_relates(&mut links);
-        span.record("gitlab.links.count", usize_to_i64(links.len()));
-        ConversationMetadata::with_links(links)
+            let (body_result, notes_result, review_comments_result, metadata) =
+                tokio::join!(body_task, notes_task, review_comments_task, metadata_task);
+
+            let mut comments = notes_result?;
+            comments.extend(review_comments_result?);
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+            match body_result? {
+                SeedBody::Issue(Some(issue)) => {
+                    let mut links = metadata.links;
+                    if let Some(url) = issue.web_url.as_deref() {
+                        links.push(map_url_reference(url));
+                    }
+                    Ok(Conversation {
+                        id: issue.iid.to_string(),
+                        title: issue.title,
+                        state: issue.state,
+                        body: issue.description,
+                        comments,
+                        metadata: ConversationMetadata::with_links(links),
+                    })
+                }
+                SeedBody::Issue(None) => Err(AppError::not_found(format!(
+                    "Issue #{iid} not found in repo {repo}."
+                ))
+                .into()),
+                SeedBody::Pr(Some(mr)) => {
+                    let mut links = metadata.links;
+                    if let Some(url) = mr.web_url.as_deref() {
+                        links.push(map_url_reference(url));
+                    }
+                    Ok(Conversation {
+                        id: mr.iid.to_string(),
+                        title: mr.title,
+                        state: mr.state,
+                        body: mr.description,
+                        comments,
+                        metadata: ConversationMetadata::with_links(links),
+                    })
+                }
+                SeedBody::Pr(None) => {
+                    if self
+                        .fetch_issue_by_iid(repo, iid, req.token.as_deref())
+                        .await?
+                        .is_some()
+                    {
+                        return Err(AppError::usage(format!(
+                            "ID {iid} in repo {repo} is an issue, not a merge request."
+                        ))
+                        .into());
+                    }
+                    Err(AppError::not_found(format!(
+                        "Merge request !{iid} not found in repo {repo}."
+                    ))
+                    .into())
+                }
+            }
+        }
+        .instrument(span)
+        .await
     }
 
     async fn collect_pr_links(
@@ -448,16 +618,30 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/merge_requests/{iid}/closes_issues",
             self.base_url
         );
-        match self
-            .get_pages::<GitLabRelatedIssueRef>(
+        let related_issues_url = format!(
+            "{}/api/v4/projects/{project}/merge_requests/{iid}/related_issues",
+            self.base_url
+        );
+        let (closed_issues_result, related_issues_result) = tokio::join!(
+            self.get_pages::<GitLabRelatedIssueRef>(
                 &closes_url,
                 &[],
                 req.token.as_deref(),
                 req.per_page,
                 true,
+                GitLabPageContext::new("links_closes_issues", "closes issues fetch"),
+            ),
+            self.get_pages::<GitLabRelatedIssueRef>(
+                &related_issues_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+                GitLabPageContext::new("links_related_issues", "related issues fetch"),
             )
-            .await
-        {
+        );
+
+        match closed_issues_result {
             Ok(closed_issues) => {
                 for issue in closed_issues {
                     if let Some(url) = issue.web_url.as_deref() {
@@ -470,21 +654,7 @@ impl GitLabSource {
             }
             Err(err) => warn!(repo, iid, error = %err, "GitLab closes_issues fetch failed"),
         }
-
-        let related_issues_url = format!(
-            "{}/api/v4/projects/{project}/merge_requests/{iid}/related_issues",
-            self.base_url
-        );
-        match self
-            .get_pages::<GitLabRelatedIssueRef>(
-                &related_issues_url,
-                &[],
-                req.token.as_deref(),
-                req.per_page,
-                true,
-            )
-            .await
-        {
+        match related_issues_result {
             Ok(related_issues) => {
                 for issue in related_issues {
                     if let Some(url) = issue.web_url.as_deref() {
@@ -511,16 +681,45 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/issues/{iid}/links",
             self.base_url
         );
-        match self
-            .get_pages::<GitLabIssueLinkItem>(
+        let closed_by_url = format!(
+            "{}/api/v4/projects/{project}/issues/{iid}/closed_by",
+            self.base_url
+        );
+        let related_mr_url = format!(
+            "{}/api/v4/projects/{project}/issues/{iid}/related_merge_requests",
+            self.base_url
+        );
+        let (issue_links_result, closed_by_result, related_mrs_result) = tokio::join!(
+            self.get_pages::<GitLabIssueLinkItem>(
                 &links_url,
                 &[],
                 req.token.as_deref(),
                 req.per_page,
                 true,
+                GitLabPageContext::new("links_issue_links", "issue links fetch"),
+            ),
+            self.get_pages::<GitLabMergeRequestRef>(
+                &closed_by_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+                GitLabPageContext::new("links_closed_by", "closed_by fetch"),
+            ),
+            self.get_pages::<GitLabMergeRequestRef>(
+                &related_mr_url,
+                &[],
+                req.token.as_deref(),
+                req.per_page,
+                true,
+                GitLabPageContext::new(
+                    "links_related_merge_requests",
+                    "related merge requests fetch",
+                ),
             )
-            .await
-        {
+        );
+
+        match issue_links_result {
             Ok(issue_links) => {
                 links.extend(
                     issue_links
@@ -530,21 +729,7 @@ impl GitLabSource {
             }
             Err(err) => warn!(repo, iid, error = %err, "GitLab issue links fetch failed"),
         }
-
-        let closed_by_url = format!(
-            "{}/api/v4/projects/{project}/issues/{iid}/closed_by",
-            self.base_url
-        );
-        match self
-            .get_pages::<GitLabMergeRequestRef>(
-                &closed_by_url,
-                &[],
-                req.token.as_deref(),
-                req.per_page,
-                true,
-            )
-            .await
-        {
+        match closed_by_result {
             Ok(closed_by) => {
                 for mr in closed_by {
                     if let Some(url) = mr.web_url.as_deref() {
@@ -555,21 +740,7 @@ impl GitLabSource {
             }
             Err(err) => warn!(repo, iid, error = %err, "GitLab closed_by fetch failed"),
         }
-
-        let related_mr_url = format!(
-            "{}/api/v4/projects/{project}/issues/{iid}/related_merge_requests",
-            self.base_url
-        );
-        match self
-            .get_pages::<GitLabMergeRequestRef>(
-                &related_mr_url,
-                &[],
-                req.token.as_deref(),
-                req.per_page,
-                true,
-            )
-            .await
-        {
+        match related_mrs_result {
             Ok(related_mrs) => {
                 for mr in related_mrs {
                     if let Some(url) = mr.web_url.as_deref() {
@@ -593,40 +764,52 @@ impl GitLabSource {
         seed: ConversationSeed,
         req: &FetchRequest,
     ) -> Result<Conversation> {
-        let _span = debug_span!(
-            "gitlab.hydrate.conversation",
+        let span = debug_span!(
+            "gitlab.hydrate.issue",
             include_comments = req.include_comments,
             include_review_comments = req.include_review_comments,
             include_links = req.include_links,
             is_pr = seed.is_pr
-        )
-        .entered();
-        let mut comments = Vec::new();
-        if req.include_comments {
-            let _notes_span = debug_span!("gitlab.hydrate.notes.stage").entered();
-            comments = self.fetch_notes(repo, seed.id, seed.is_pr, req).await?;
-            if seed.is_pr && req.include_review_comments {
-                let _reviews_span = debug_span!("gitlab.hydrate.review_comments.stage").entered();
-                comments.extend(self.fetch_review_comments(repo, seed.id, req).await?);
-                comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-            }
-        }
-        let metadata = if req.include_links {
-            let _links_span = debug_span!("gitlab.hydrate.links.stage").entered();
-            self.fetch_links(repo, seed.id, seed.is_pr, seed.web_url.as_deref(), req)
-                .await
-        } else {
-            ConversationMetadata::empty()
-        };
+        );
+        async {
+            let notes_task = async {
+                if !req.include_comments {
+                    return Ok::<Vec<Comment>, anyhow::Error>(Vec::new());
+                }
+                self.fetch_notes(repo, seed.id, seed.is_pr, req).await
+            };
+            let review_comments_task = async {
+                if !req.include_comments || !seed.is_pr || !req.include_review_comments {
+                    return Ok::<Vec<Comment>, anyhow::Error>(Vec::new());
+                }
+                self.fetch_review_comments(repo, seed.id, req).await
+            };
+            let metadata_task = async {
+                if req.include_links {
+                    self.fetch_links(repo, seed.id, seed.is_pr, seed.web_url.as_deref(), req)
+                        .await
+                } else {
+                    ConversationMetadata::empty()
+                }
+            };
 
-        Ok(Conversation {
-            id: seed.id.to_string(),
-            title: seed.title,
-            state: seed.state,
-            body: seed.body,
-            comments,
-            metadata,
-        })
+            let (notes_result, review_comments_result, metadata) =
+                tokio::join!(notes_task, review_comments_task, metadata_task);
+            let mut comments = notes_result?;
+            comments.extend(review_comments_result?);
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+            Ok(Conversation {
+                id: seed.id.to_string(),
+                title: seed.title,
+                state: seed.state,
+                body: seed.body,
+                comments,
+                metadata,
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     pub(super) async fn fetch_issue_by_iid(
@@ -637,7 +820,7 @@ impl GitLabSource {
     ) -> Result<Option<GitLabIssueItem>> {
         let project = encode_project_path(repo);
         let url = format!("{}/api/v4/projects/{project}/issues/{iid}", self.base_url);
-        self.get_one(&url, token).await
+        self.get_one(&url, token, "issue fetch").await
     }
 
     pub(super) async fn fetch_mr_by_iid(
@@ -651,7 +834,7 @@ impl GitLabSource {
             "{}/api/v4/projects/{project}/merge_requests/{iid}",
             self.base_url
         );
-        self.get_one(&url, token).await
+        self.get_one(&url, token, "merge request fetch").await
     }
 }
 
