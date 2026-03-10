@@ -98,7 +98,7 @@ token = "glpat_your_token"
 [instances.work-jira]
 platform = "jira"
 url = "https://jira.mycompany.com"
-repo = "CPQ"
+repo = "project"
 token = "atlassian_api_token"
 account_email = "user@example.com"
 
@@ -112,7 +112,7 @@ token = "username:app_password"
 platform = "bitbucket"
 deployment = "selfhosted"
 url = "https://bitbucket.mycompany.com"
-repo = "PROJECT/repo_slug"
+repo = "project/repo_slug"
 token = "pat_or_bearer_token"
 ```
 

@@ -1,0 +1,67 @@
+# Example 99problems configuration.
+# Copy this file to ".99problems" (home or repo-local) and fill real values.
+# Do not commit real tokens.
+# To activate:
+# 1) Uncomment one (or multiple) [instances.*] block and fill values.
+# 2) Uncomment default_instance and point it to that alias.
+# 3) Optionally uncomment [telemetry] if you want OTEL traces (and built the binary from sources).
+
+# default_instance = "github-public"
+
+#[instances.github-public]
+# platform = "github"
+# GitHub repo format: owner/repo
+# repo = "owner/repo"
+# token = "<GITHUB_TOKEN>"
+# Optional search default (open|closed|all)
+# state = "open"
+# Optional default content type (issue|pr):
+# - type_default: implicit default (recommended)
+# - type: explicit default (stricter behavior, same as passing --type)
+# type_default = "issue"
+
+#[instances.gitlab-work]
+# platform = "gitlab"
+# url = "https://gitlab.example.com"
+# GitLab repo format: group/project (nested groups are supported)
+# repo = "group/project"
+# token = "<GITLAB_TOKEN>"
+# Optional search default (opened|closed|all)
+# state = "opened"
+
+#[instances.jira-work]
+# platform = "jira"
+# url = "https://jira.example.com"
+# Jira: "repo" means project key (for example "CPQ"), not owner/repo.
+# It is used for search defaults; by-id fetch (--id CPQ-123) does not require it.
+# repo = "CPQ"
+# For Atlassian Cloud API tokens, set account_email and keep token as just the API token.
+# Use email:api_token only if account_email is not configured.
+# token = "<JIRA_TOKEN>"
+# account_email = "user@example.com"
+
+#[instances.bitbucket-cloud]
+# platform = "bitbucket"
+# deployment = "cloud"
+# Bitbucket Cloud repo format: workspace/repo_slug
+# "workspace" can be a team/org or personal namespace.
+# repo = "workspace/repo_slug"
+# token = "<BITBUCKET_CLOUD_TOKEN>"
+# Bitbucket supports pull requests only; type defaults to "pr" when omitted.
+
+#[instances.bitbucket-dc]
+# platform = "bitbucket"
+# deployment = "selfhosted"
+# url = "https://bitbucket.example.com"
+# Bitbucket Data Center repo format is still "<namespace>/repo_slug":
+# - project repos: PROJECT/repo_slug
+# - personal repos: ~username/repo_slug
+# repo = "PROJECT/repo_slug"
+# token = "<BITBUCKET_DC_TOKEN>"
+
+#[telemetry]
+# Telemetry is optional and best-effort.
+# enabled = false
+# otlp_endpoint = "http://localhost:4318/v1/traces"
+# Optional noisy-target suppression (prefix match).
+# exclude_targets = ["h2", "hyper", "hyper_util", "rustls"]

@@ -1,7 +1,7 @@
 {
   "name": "@mbe24/99problems",
-  "version": "0.2.0",
-  "description": "GitHub issue conversation fetcher CLI",
+  "version": "0.0.0-dev",
+  "description": "AI-native CLI for issue/PR context retrieval across Jira, GitLab, GitHub, and Bitbucket, with structured output for humans and AI agents.",
   "bin": {
     "99problems": "./npm/bin/99problems.js"
   },
@@ -9,11 +9,11 @@
     "postinstall": "node npm/install.js"
   },
   "optionalDependencies": {
-    "@mbe24/99problems-win32-x64": "0.2.0",
-    "@mbe24/99problems-linux-x64": "0.2.0",
-    "@mbe24/99problems-darwin-x64": "0.2.0",
-    "@mbe24/99problems-darwin-arm64": "0.2.0",
-    "@mbe24/99problems-linux-arm64": "0.2.0"
+    "@mbe24/99problems-win32-x64": "0.0.0-dev",
+    "@mbe24/99problems-linux-x64": "0.0.0-dev",
+    "@mbe24/99problems-darwin-x64": "0.0.0-dev",
+    "@mbe24/99problems-darwin-arm64": "0.0.0-dev",
+    "@mbe24/99problems-linux-arm64": "0.0.0-dev"
   },
   "license": "Apache-2.0",
   "repository": {
