@@ -8,7 +8,8 @@ issue/
 
 # Local config dotfile (may contain tokens)
 .99problems
-.agents/skills/
+.agents/*
+!.agents/AGENTS.md
 
 # Node
 node_modules/
