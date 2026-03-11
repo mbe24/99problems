@@ -29,7 +29,7 @@ Use it to recover decisions, constraints, and related work items before proposin
 ## Command Patterns
 ### Issue Search
 ```bash
-99problems get --instance github -q "repo:owner/repo is:issue state:open label:bug"
+99problems get --instance github -q "repo:owner/repo is:issue state:open"
 ```
 
 ### Pull Request Search
