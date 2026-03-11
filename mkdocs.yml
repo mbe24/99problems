@@ -16,3 +16,22 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Configuration: configuration.md
+  - Providers:
+      - Overview: providers/index.md
+      - GitHub: providers/github.md
+      - GitLab: providers/gitlab.md
+      - Jira: providers/jira.md
+      - Bitbucket Cloud: providers/bitbucket-cloud.md
+      - Bitbucket Data Center: providers/bitbucket-datacenter.md
+  - Commands:
+      - Overview: commands/index.md
+      - get: commands/get.md
+      - config: commands/config.md
+      - skill: commands/skill.md
+      - completions: commands/completions.md
+      - man: commands/man.md
+  - Reference:
+      - Global Options: reference/global-options.md
+      - Output and Payload: reference/output-and-payload.md
+      - Query Semantics: reference/query-semantics.md
+      - Config Keys: reference/config-keys.md

@@ -2,12 +2,15 @@
 
 `99problems` is an AI-native CLI for retrieving issue and pull request context across GitHub, GitLab, Jira, and Bitbucket.
 
-Use this site for task-focused docs, and the repository README for the full project overview.
+Use this site for task-focused usage plus full command/provider reference.
 
 ## What you can find here
 
 - Setup and day-one usage in [Getting Started](getting-started.md)
 - Runtime and instance configuration in [Configuration](configuration.md)
+- Provider-specific behavior in [Providers](providers/index.md)
+- Command and subcommand details in [Commands](commands/index.md)
+- Option and key reference in [Reference](reference/global-options.md)
 - Versioned documentation on Read the Docs (`latest`, `stable`, and release tags)
 
 ## Documentation boundaries
