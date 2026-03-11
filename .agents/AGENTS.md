@@ -14,6 +14,10 @@ cargo clippy --all-targets --no-deps --features telemetry-otel -- -W clippy::ped
 
 No additional Rust commands are required in this iteration.
 
+## Commit Message Requirement
+
+For every completed task with repo changes, include a Conventional Commit message draft with a scope (`type(scope): summary`). This includes interactive sessions and autonomous agents that are allowed to create commits directly.
+
 ## Docs Sync Requirements
 
 When a change affects observable behavior, CLI usage, or workflow, update the following in the same pull request:
