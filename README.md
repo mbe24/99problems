@@ -1,6 +1,7 @@
 # 99problems
 
 [![CI](https://github.com/mbe24/99problems/actions/workflows/ci.yml/badge.svg)](https://github.com/mbe24/99problems/actions/workflows/ci.yml)
+[![Docs](https://readthedocs.org/projects/99problems/badge/?version=latest)](https://99problems.readthedocs.io/en/latest/)
 [![npm](https://img.shields.io/npm/v/@mbe24/99problems?color=7C3AED&label=npm)](https://www.npmjs.com/package/@mbe24/99problems)
 [![crates.io](https://img.shields.io/crates/v/problems99?color=7C3AED&label=crates.io)](https://crates.io/crates/problems99)
 ![platforms](https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macos-7C3AED)
@@ -142,20 +143,6 @@ Note that telemetry export requires a build with the telemetry-otel feature enab
 - Default builds include it.
 - Use `--no-default-features` for telemetry-free release binaries.
 
-## Man Pages
-
-Generate and print root man page:
-
-```bash
-99problems man
-```
-
-Generate all pages to disk:
-
-```bash
-99problems man --output docs/man --section 1
-```
-
 ## Output Modes
 
 `get` supports two orthogonal controls:
@@ -197,6 +184,26 @@ Use user scope by overriding path:
 
 ```bash
 99problems skill init --path ~/.agents/skills
+```
+
+## Documentation
+
+Project documentation is available at [99problems.readthedocs.io](https://99problems.readthedocs.io/).
+
+Public docs source lives in [`docs/`](docs/). Internal-only notes belong in [`docs/internal/`](docs/internal/) and are excluded from the published site.
+
+### Man Pages
+
+Generate and print root man page:
+
+```bash
+99problems man
+```
+
+Generate all pages to disk:
+
+```bash
+99problems man --output docs/man --section 1
 ```
 
 ## Support this project
