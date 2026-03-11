@@ -21,6 +21,31 @@ This is useful for Agentic Engineering workflows and for humans doing direct inv
 
 Public docs are hosted on Read the Docs: [99problems.readthedocs.io](https://99problems.readthedocs.io/).
 
+### Man Pages
+
+Generate and print root man page:
+
+```bash
+99problems man
+```
+
+Generate all pages to disk:
+
+```bash
+99problems man --output docs/man --section 1
+```
+
+### Documentation Authoring
+
+- Public docs source lives under [`docs/`](docs/).
+- Internal-only docs should live under [`docs/internal/`](docs/internal/) and are excluded from the published site.
+- Validate docs locally with:
+
+```bash
+pip install -r docs/requirements.txt
+mkdocs build --strict
+```
+
 ## Installation
 
 ```bash
@@ -147,20 +172,6 @@ Note that telemetry export requires a build with the telemetry-otel feature enab
 - Default builds include it.
 - Use `--no-default-features` for telemetry-free release binaries.
 
-## Man Pages
-
-Generate and print root man page:
-
-```bash
-99problems man
-```
-
-Generate all pages to disk:
-
-```bash
-99problems man --output docs/man --section 1
-```
-
 ## Output Modes
 
 `get` supports two orthogonal controls:
@@ -211,17 +222,6 @@ If 99problems saves you time, you can support ongoing maintenance via [GitHub Sp
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Documentation Authoring
-
-- Public docs source lives under [`docs/`](docs/).
-- Internal-only docs should live under [`docs/internal/`](docs/internal/) and are excluded from the published site.
-- Validate docs locally with:
-
-```bash
-pip install -r docs/requirements.txt
-mkdocs build --strict
-```
 
 ## License
 
