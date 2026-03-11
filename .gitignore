@@ -2,8 +2,7 @@
 /target
 
 # Private docs (see docs/ for publishing and deployment guides)
-/docs/npm-publishing.md
-/docs/deployment.md
+/docs/internal
 plan/
 issue/
 

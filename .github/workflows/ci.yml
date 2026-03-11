@@ -40,22 +40,48 @@ jobs:
       - name: Unit tests
         run: cargo test --features telemetry-otel
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install docs dependencies
-        run: pip install -r docs/requirements.txt
-
-      - name: Docs build (strict)
-        run: mkdocs build --strict
-
       - name: Integration tests
         if: env.GITHUB_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cargo test --features telemetry-otel -- --include-ignored --skip jira_ --skip bitbucket_
+
+  docs:
+    name: Docs
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect docs-related changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - 'mkdocs.yml'
+              - '.readthedocs.yml'
+
+      - name: Set up Python
+        if: steps.changes.outputs.docs == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install docs dependencies
+        if: steps.changes.outputs.docs == 'true'
+        run: pip install -r docs/requirements.txt
+
+      - name: Docs build (strict)
+        if: steps.changes.outputs.docs == 'true'
+        run: mkdocs build --strict
+
+      - name: Skip docs build (no docs changes)
+        if: steps.changes.outputs.docs != 'true'
+        run: echo "No docs-related changes detected; skipping docs build."
 
   test_no_telemetry:
     name: Test (no telemetry feature)

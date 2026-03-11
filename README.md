@@ -17,35 +17,6 @@ Software tasks often depend on decisions made in earlier issues and pull request
 
 This is useful for Agentic Engineering workflows and for humans doing direct investigation in terminals or scripts.
 
-## Documentation
-
-Public docs are hosted on Read the Docs: [99problems.readthedocs.io](https://99problems.readthedocs.io/).
-
-### Man Pages
-
-Generate and print root man page:
-
-```bash
-99problems man
-```
-
-Generate all pages to disk:
-
-```bash
-99problems man --output docs/man --section 1
-```
-
-### Documentation Authoring
-
-- Public docs source lives under [`docs/`](docs/).
-- Internal-only docs should live under [`docs/internal/`](docs/internal/) and are excluded from the published site.
-- Validate docs locally with:
-
-```bash
-pip install -r docs/requirements.txt
-mkdocs build --strict
-```
-
 ## Installation
 
 ```bash
@@ -213,6 +184,26 @@ Use user scope by overriding path:
 
 ```bash
 99problems skill init --path ~/.agents/skills
+```
+
+## Documentation
+
+Project documentation is available at [99problems.readthedocs.io](https://99problems.readthedocs.io/).
+
+Public docs source lives in [`docs/`](docs/). Internal-only notes belong in [`docs/internal/`](docs/internal/) and are excluded from the published site.
+
+### Man Pages
+
+Generate and print root man page:
+
+```bash
+99problems man
+```
+
+Generate all pages to disk:
+
+```bash
+99problems man --output docs/man --section 1
 ```
 
 ## Support this project
