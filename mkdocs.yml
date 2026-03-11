@@ -15,6 +15,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Agentic Workflow: agentic-workflow.md
   - Configuration: configuration.md
   - Providers:
       - Overview: providers/index.md

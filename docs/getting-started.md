@@ -8,6 +8,8 @@ npm install -g @mbe24/99problems
 cargo install problems99
 ```
 
+## Manual Usage
+
 Fetch a GitHub issue:
 
 ```bash
@@ -32,10 +34,27 @@ Fetch Bitbucket Cloud PR by ID:
 99problems get --platform bitbucket --deployment cloud --repo workspace/repo_slug --id 12 --type pr
 ```
 
-Common next steps:
+Manual next steps:
 
 - Configure a default instance in `~/.99problems` for fewer CLI flags
 - Use `--format jsonl --output-mode stream` for automation pipelines
-- Use the Read the Docs version selector to browse `latest`, `stable`, or a tagged release
 - Review all providers in [Providers](providers/index.md)
 - Review every command/subcommand in [Commands](commands/index.md)
+
+## Agentic Usage
+
+Initialize the canonical skill:
+
+```bash
+99problems skill init
+```
+
+Agents can use the skill automatically when relevant, or explicitly via `$99problems`.
+
+Example:
+
+```text
+$99problems find related issues and PRs for topic "architectural redesign"
+```
+
+For task patterns and examples, see [Agentic Workflow](agentic-workflow.md).

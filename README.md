@@ -19,13 +19,53 @@ This is useful for Agentic Engineering workflows and for humans doing direct inv
 
 ## Installation
 
+Install the CLI:
+
 ```bash
 npm install -g @mbe24/99problems
 # or
 cargo install problems99
 ```
 
+Initialize the canonical `99problems` Agent Skill scaffold:
+
+```bash
+# initialize the canonical 99problems skill in the current project
+99problems skill init
+# or use the global skill location (shared across projects)
+99problems skill init --path ~/.agents/skills
+```
+
 ## Quick Start
+
+There are two primary ways to use `99problems`. Refer to Agentic Use for AI-assisted workflows, or Manual Use for direct CLI usage.
+
+### Agentic Use
+
+Now that the skill is installed, start your agent session.
+Use it to retrieve cross-system context for concrete engineering tasks like topic mapping, bug triage, and progress estimation.
+
+To map work related to a topic across issues and PRs (with explicit skill invocation):
+
+```text
+llm-prompt> Use $99problems find related issues and PRs for topic "architectural redesign"
+```
+
+To produce a bug-focused status overview for a repository (with implicit skill invocation):
+
+```text
+llm-prompt> Create an overview of open bugs and cross-reference them with active PRs in owner/repo.
+```
+
+To estimate delivery progress from linked tracker and PR state:
+
+```text
+llm-prompt> Estimate progress for topic "build modernization" based on linked issues and PR states.
+```
+
+### Manual Use
+
+Use this when you run `99problems` directly in a terminal to fetch context from specific providers.
 
 ```bash
 # Fetch one GitHub issue
@@ -48,9 +88,6 @@ cargo install problems99
 
 # Stream as JSON Lines for pipelines
 99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
-
-# Scaffold the canonical Agent Skill
-99problems skill init
 ```
 
 ## Commands
@@ -169,21 +206,6 @@ Use `--output-mode batch` when you want all-or-nothing output at the end.
 99problems completions bash
 99problems completions zsh
 99problems completions powershell
-```
-
-## Agent Skill Scaffold
-
-Canonical editable skill sources live in `templates/skills/99problems`.
-Generate a standardized Agent Skills scaffold under `.agents/skills/99problems` with:
-
-```bash
-99problems skill init
-```
-
-Use user scope by overriding path:
-
-```bash
-99problems skill init --path ~/.agents/skills
 ```
 
 ## Documentation

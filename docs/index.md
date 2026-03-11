@@ -7,6 +7,7 @@ Use this site for task-focused usage plus full command/provider reference.
 ## What you can find here
 
 - Setup and day-one usage in [Getting Started](getting-started.md)
+- AI-first usage patterns in [Agentic Workflow](agentic-workflow.md)
 - Runtime and instance configuration in [Configuration](configuration.md)
 - Provider-specific behavior in [Providers](providers/index.md)
 - Command and subcommand details in [Commands](commands/index.md)
