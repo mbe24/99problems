@@ -1,0 +1,18 @@
+site_name: 99problems
+site_description: Documentation for the 99problems CLI
+site_url: https://99problems.readthedocs.io/
+repo_url: https://github.com/mbe24/99problems
+repo_name: mbe24/99problems
+edit_uri: edit/main/docs/
+docs_dir: docs
+strict: true
+
+exclude_docs: internal/**
+
+theme:
+  name: readthedocs
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md

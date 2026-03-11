@@ -40,6 +40,17 @@ jobs:
       - name: Unit tests
         run: cargo test --features telemetry-otel
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Docs build (strict)
+        run: mkdocs build --strict
+
       - name: Integration tests
         if: env.GITHUB_TOKEN != ''
         env:
