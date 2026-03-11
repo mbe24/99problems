@@ -10,7 +10,7 @@ strict: true
 exclude_docs: internal/**
 
 theme:
-  name: readthedocs
+  name: material
 
 nav:
   - Home: index.md
