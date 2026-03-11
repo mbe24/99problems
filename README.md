@@ -121,7 +121,7 @@ For Bitbucket Cloud, use an app-password, repository access token, or workspace-
 
 Selection order: `--instance` -> single configured instance -> `default_instance`.
 
-Telemetry (testing-first, config-activated):
+### Telemetry
 
 ```toml
 [telemetry]
@@ -130,15 +130,14 @@ otlp_endpoint = "http://localhost:4318/v1/traces"
 exclude_targets = ["h2", "hyper", "hyper_util", "rustls"]
 ```
 
-Telemetry is best-effort and traces `99problems get` without changing normal command behavior or exit codes.
-Use `telemetry.exclude_targets` to suppress noisy span-target prefixes (prefix match).
-Equivalent config command:
+Telemetry is best-effort and traces `99problems get` without changing normal command behavior or exit codes. For quick local OpenTelemetry backend setup, use Grafana LGTM (Docker image: [`grafana/otel-lgtm`](https://hub.docker.com/r/grafana/otel-lgtm)).
+
+Use `telemetry.exclude_targets` to suppress noisy span-target prefixes (prefix match). Equivalent config command:
 
 ```bash
 99problems config set telemetry.exclude_targets h2,hyper,hyper_util,rustls
 ```
-
-Build-time feature:
+Note that telemetry export requires a build with the telemetry-otel feature enabled:
 - `telemetry-otel` controls whether OTEL support is compiled in.
 - Default builds include it.
 - Use `--no-default-features` for telemetry-free release binaries.
