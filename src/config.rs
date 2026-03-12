@@ -301,7 +301,7 @@ fn resolve_instance_mode(merged: &DotfileConfig, opts: ResolveOptions<'_>) -> Re
     let token = opts
         .token
         .map(std::borrow::ToOwned::to_owned)
-        .or_else(|| std::env::var(token_env_var(&platform)).ok())
+        .or_else(|| token_from_env(&platform))
         .or_else(|| instance.token.clone());
     let account_email = opts
         .account_email
@@ -354,7 +354,7 @@ fn resolve_cli_only_mode(opts: ResolveOptions<'_>) -> Result<Config> {
     let token = opts
         .token
         .map(std::borrow::ToOwned::to_owned)
-        .or_else(|| std::env::var(token_env_var(&platform)).ok());
+        .or_else(|| token_from_env(&platform));
     let account_email = opts
         .account_email
         .map(std::borrow::ToOwned::to_owned)
@@ -523,12 +523,30 @@ fn validate_instance_keys(table: &toml::value::Table) -> Result<()> {
 #[must_use]
 pub fn token_env_var(platform: &str) -> &'static str {
     match platform {
-        "github" => "GITHUB_TOKEN",
-        "gitlab" => "GITLAB_TOKEN",
-        "jira" => "JIRA_TOKEN",
-        "bitbucket" => "BITBUCKET_TOKEN",
+        "github" => "TOKEN_GITHUB",
+        "gitlab" => "TOKEN_GITLAB",
+        "jira" => "TOKEN_JIRA",
+        "bitbucket" => "TOKEN_BITBUCKET",
         _ => "TOKEN",
     }
+}
+
+#[must_use]
+pub fn legacy_token_env_var(platform: &str) -> Option<&'static str> {
+    match platform {
+        "github" => Some("GITHUB_TOKEN"),
+        "gitlab" => Some("GITLAB_TOKEN"),
+        "jira" => Some("JIRA_TOKEN"),
+        "bitbucket" => Some("BITBUCKET_TOKEN"),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn token_from_env(platform: &str) -> Option<String> {
+    std::env::var(token_env_var(platform))
+        .ok()
+        .or_else(|| legacy_token_env_var(platform).and_then(|key| std::env::var(key).ok()))
 }
 
 #[must_use]
@@ -612,6 +630,22 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("instances.work.foo"));
+    }
+
+    #[test]
+    fn token_env_var_prefers_canonical_names() {
+        assert_eq!(token_env_var("github"), "TOKEN_GITHUB");
+        assert_eq!(token_env_var("gitlab"), "TOKEN_GITLAB");
+        assert_eq!(token_env_var("jira"), "TOKEN_JIRA");
+        assert_eq!(token_env_var("bitbucket"), "TOKEN_BITBUCKET");
+    }
+
+    #[test]
+    fn legacy_token_env_var_remains_available_for_compat() {
+        assert_eq!(legacy_token_env_var("github"), Some("GITHUB_TOKEN"));
+        assert_eq!(legacy_token_env_var("gitlab"), Some("GITLAB_TOKEN"));
+        assert_eq!(legacy_token_env_var("jira"), Some("JIRA_TOKEN"));
+        assert_eq!(legacy_token_env_var("bitbucket"), Some("BITBUCKET_TOKEN"));
     }
 
     #[test]

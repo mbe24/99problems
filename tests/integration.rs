@@ -1,10 +1,10 @@
 /// Integration tests — live network tests for GitHub + GitLab + Jira.
 /// Run with: cargo test -- --include-ignored
 /// Optional env vars for higher-rate/authenticated calls:
-/// - `GITHUB_TOKEN`=...
-/// - `GITLAB_TOKEN`=...
-/// - `JIRA_TOKEN`=...
-/// - `BITBUCKET_TOKEN`=...
+/// - `TOKEN_GITHUB`=... (legacy fallback: `GITHUB_TOKEN`)
+/// - `TOKEN_GITLAB`=... (legacy fallback: `GITLAB_TOKEN`)
+/// - `TOKEN_JIRA`=... (legacy fallback: `JIRA_TOKEN`)
+/// - `TOKEN_BITBUCKET`=... (legacy fallback: `BITBUCKET_TOKEN`)
 /// - `BITBUCKET_REPO`=`workspace/repo_slug`
 /// - `BITBUCKET_PR_ID`=numeric pull request id
 #[cfg(test)]
@@ -26,26 +26,35 @@ mod tests {
     }
 
     fn github_token() -> Option<String> {
-        std::env::var("GITHUB_TOKEN").ok().or_else(|| {
-            problems99::config::Config::load_with_options(problems99::config::ResolveOptions {
-                instance: Some("github"),
-                ..problems99::config::ResolveOptions::default()
-            })
+        std::env::var("TOKEN_GITHUB")
             .ok()
-            .and_then(|c| c.token)
-        })
+            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .or_else(|| {
+                problems99::config::Config::load_with_options(problems99::config::ResolveOptions {
+                    instance: Some("github"),
+                    ..problems99::config::ResolveOptions::default()
+                })
+                .ok()
+                .and_then(|c| c.token)
+            })
     }
 
     fn gitlab_token() -> Option<String> {
-        std::env::var("GITLAB_TOKEN").ok()
+        std::env::var("TOKEN_GITLAB")
+            .ok()
+            .or_else(|| std::env::var("GITLAB_TOKEN").ok())
     }
 
     fn jira_token() -> Option<String> {
-        std::env::var("JIRA_TOKEN").ok()
+        std::env::var("TOKEN_JIRA")
+            .ok()
+            .or_else(|| std::env::var("JIRA_TOKEN").ok())
     }
 
     fn bitbucket_token() -> Option<String> {
-        std::env::var("BITBUCKET_TOKEN").ok()
+        std::env::var("TOKEN_BITBUCKET")
+            .ok()
+            .or_else(|| std::env::var("BITBUCKET_TOKEN").ok())
     }
 
     fn required_env(var: &str) -> String {
@@ -124,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_known_issue_1842() {
         let source = GitHubSource::new(false).unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
@@ -141,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_search_returns_results() {
         let source = GitHubSource::new(false).unwrap();
         let req = FetchRequest {
@@ -165,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_one_comment_has_author_and_body() {
         let source = GitHubSource::new(false).unwrap();
         let req = req_id("schemaorg/schemaorg", "1842", false);
@@ -183,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_pr_2402_default_issue_comments_only() {
         let source = GitHubSource::new(false).unwrap();
         let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Pr);
@@ -206,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_pr_2402_with_review_comments() {
         let source = GitHubSource::new(false).unwrap();
         let mut req = req_id_with_kind("github/gitignore", "2402", ContentKind::Pr);
@@ -227,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_search_pr_query_includes_2402() {
         let source = GitHubSource::new(false).unwrap();
         let req = FetchRequest {
@@ -248,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_issue_as_pr_errors_when_kind_is_explicit() {
         let source = GitHubSource::new(false).unwrap();
         let req = req_id_with_kind("schemaorg/schemaorg", "1842", ContentKind::Pr);
@@ -257,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires GITHUB_TOKEN and live network"]
+    #[ignore = "requires TOKEN_GITHUB (or GITHUB_TOKEN) and live network"]
     fn github_fetch_pr_as_issue_errors_when_fallback_is_disabled() {
         let source = GitHubSource::new(false).unwrap();
         let req = req_id_with_kind("github/gitignore", "2402", ContentKind::Issue);
@@ -266,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    #[ignore = "requires live network (TOKEN_GITLAB/GITLAB_TOKEN recommended for comments)"]
     fn gitlab_fetch_issue_6() {
         let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
@@ -298,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    #[ignore = "requires live network (TOKEN_GITLAB/GITLAB_TOKEN recommended for comments)"]
     fn gitlab_fetch_mr_6() {
         let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
@@ -330,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    #[ignore = "requires live network (TOKEN_GITLAB/GITLAB_TOKEN recommended for comments)"]
     fn gitlab_search_issue_results() {
         let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {
@@ -359,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires live network (GITLAB_TOKEN recommended for comments)"]
+    #[ignore = "requires live network (TOKEN_GITLAB/GITLAB_TOKEN recommended for comments)"]
     fn gitlab_search_mr_results() {
         let source = GitLabSource::new(None, false).unwrap();
         let req = FetchRequest {

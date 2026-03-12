@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::cmd::config::key::{ConfigKey, InstanceField};
 use crate::config::{
-    DotfileConfig, InstanceConfig, TelemetrySection, account_email_env_var, token_env_var,
+    DotfileConfig, InstanceConfig, TelemetrySection, account_email_env_var, token_from_env,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -363,7 +363,7 @@ fn merge_telemetry(
 fn apply_env_overrides(cfg: &mut DotfileConfig) {
     for instance in cfg.instances.values_mut() {
         if let Some(platform) = instance.platform.as_deref()
-            && let Ok(token) = std::env::var(token_env_var(platform))
+            && let Some(token) = token_from_env(platform)
         {
             instance.token = Some(token);
         }

@@ -40,11 +40,113 @@ jobs:
       - name: Unit tests
         run: cargo test --features telemetry-otel
 
-      - name: Integration tests
-        if: env.GITHUB_TOKEN != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo test --features telemetry-otel -- --include-ignored --skip jira_ --skip bitbucket_
+  integration_github:
+    name: Integration (GitHub, blocking)
+    needs: test
+    runs-on: ubuntu-latest
+    if: ${{ secrets.GITHUB_TOKEN != '' }}
+    env:
+      TOKEN_GITHUB: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Integration tests (GitHub)
+        run: cargo test --features telemetry-otel --test integration -- --include-ignored github_
+
+  integration_gitlab:
+    name: Integration (GitLab, blocking)
+    needs: test
+    runs-on: ubuntu-latest
+    if: ${{ secrets.GITLAB_TOKEN != '' }}
+    env:
+      TOKEN_GITLAB: ${{ secrets.GITLAB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Integration tests (GitLab)
+        run: cargo test --features telemetry-otel --test integration -- --include-ignored gitlab_
+
+  integration_jira:
+    name: Integration (Jira, advisory)
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: ${{ secrets.JIRA_TOKEN != '' }}
+    env:
+      TOKEN_JIRA: ${{ secrets.JIRA_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Integration tests (Jira)
+        run: cargo test --features telemetry-otel --test integration -- --include-ignored jira_
+
+  integration_bitbucket:
+    name: Integration (Bitbucket, advisory)
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: ${{ secrets.BITBUCKET_TOKEN != '' && secrets.BITBUCKET_REPO != '' && secrets.BITBUCKET_PR_ID != '' }}
+    env:
+      TOKEN_BITBUCKET: ${{ secrets.BITBUCKET_TOKEN }}
+      BITBUCKET_REPO: ${{ secrets.BITBUCKET_REPO }}
+      BITBUCKET_PR_ID: ${{ secrets.BITBUCKET_PR_ID }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Integration tests (Bitbucket)
+        run: cargo test --features telemetry-otel --test integration -- --include-ignored bitbucket_
 
   docs:
     name: Docs

@@ -11,7 +11,7 @@
 - `deployment = "selfhosted"`
 - `url` must be provided.
 - `repo` format: `project/repo_slug`
-- Token env var: `BITBUCKET_TOKEN`
+- Token env var: `TOKEN_BITBUCKET` (legacy fallback: `BITBUCKET_TOKEN`)
 
 ## Examples
 

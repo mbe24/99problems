@@ -17,7 +17,13 @@ cargo test
 Ignored integration tests (live APIs):
 
 ```bash
-cargo test -- --include-ignored --skip jira_
+# blocking provider slices
+cargo test --test integration -- --include-ignored github_
+cargo test --test integration -- --include-ignored gitlab_
+
+# advisory provider slices
+cargo test --test integration -- --include-ignored jira_
+cargo test --test integration -- --include-ignored bitbucket_
 ```
 
 ## Local Quality Gates

@@ -8,7 +8,7 @@
 ## Required Values
 
 - `repo` format: `owner/repo`
-- Token env var: `GITHUB_TOKEN`
+- Token env var: `TOKEN_GITHUB` (legacy fallback: `GITHUB_TOKEN`)
 
 ## Examples
 

@@ -170,7 +170,7 @@ impl GitHubSource {
                 if token.is_some() {
                     "GitHub token seems invalid or lacks required scope."
                 } else {
-                    "No GitHub token detected. Set --token, GITHUB_TOKEN, or [instances.<alias>].token."
+                    "No GitHub token detected. Set --token, TOKEN_GITHUB (or GITHUB_TOKEN), or [instances.<alias>].token."
                 }
             } else {
                 ""

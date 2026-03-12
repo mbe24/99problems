@@ -9,7 +9,7 @@
 
 - `repo` format: `group/project`
 - Nested groups are supported (for example `group/subgroup/project`).
-- Token env var: `GITLAB_TOKEN`
+- Token env var: `TOKEN_GITLAB` (legacy fallback: `GITLAB_TOKEN`)
 
 ## Examples
 

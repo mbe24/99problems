@@ -189,7 +189,7 @@ fn auth_hint(token: Option<&str>) -> &'static str {
     if token.is_some() {
         "Check Bitbucket token credentials and scopes."
     } else {
-        "No Bitbucket token detected. Set --token, BITBUCKET_TOKEN, or [instances.<alias>].token."
+        "No Bitbucket token detected. Set --token, TOKEN_BITBUCKET (or BITBUCKET_TOKEN), or [instances.<alias>].token."
     }
 }
 

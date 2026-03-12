@@ -9,7 +9,7 @@
 ## Required Values
 
 - `repo` is Jira project scope for search (for example `CPQ`).
-- Token env var: `JIRA_TOKEN`
+- Token env var: `TOKEN_JIRA` (legacy fallback: `JIRA_TOKEN`)
 - Optional account email env var: `JIRA_ACCOUNT_EMAIL`
 
 ## Examples

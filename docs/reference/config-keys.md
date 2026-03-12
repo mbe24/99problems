@@ -31,11 +31,11 @@ Use `instances.<alias>.<field>`:
 
 ## Environment Variables
 
-- `GITHUB_TOKEN`
-- `GITLAB_TOKEN`
-- `JIRA_TOKEN`
+- `TOKEN_GITHUB` (legacy fallback: `GITHUB_TOKEN`)
+- `TOKEN_GITLAB` (legacy fallback: `GITLAB_TOKEN`)
+- `TOKEN_JIRA` (legacy fallback: `JIRA_TOKEN`)
 - `JIRA_ACCOUNT_EMAIL`
-- `BITBUCKET_TOKEN`
+- `TOKEN_BITBUCKET` (legacy fallback: `BITBUCKET_TOKEN`)
 
 ## Selection Behavior
 

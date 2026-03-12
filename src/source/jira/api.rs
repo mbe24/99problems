@@ -246,7 +246,7 @@ impl JiraSource {
                         " Check Jira permissions for this issue."
                     }
                 } else {
-                    " Jira often returns 404 for unauthorized issues. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
+                    " Jira often returns 404 for unauthorized issues. Set --token, TOKEN_JIRA (or JIRA_TOKEN), or [instances.<alias>].token."
                 };
                 return Err(AppError::not_found(format!(
                     "Jira issue '{}' was not found or is not accessible.{} Response: {}",
@@ -587,7 +587,7 @@ impl JiraSource {
                         " Jira auth failed. If this is an Atlassian API token, also set account email (--account-email, JIRA_ACCOUNT_EMAIL, or [instances.<alias>].account_email), or pass --token as email:api_token."
                     }
                 } else {
-                    " No Jira token detected. Set --token, JIRA_TOKEN, or [instances.<alias>].token."
+                    " No Jira token detected. Set --token, TOKEN_JIRA (or JIRA_TOKEN), or [instances.<alias>].token."
                 }
             } else {
                 ""
