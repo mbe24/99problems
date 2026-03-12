@@ -500,6 +500,9 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resolve instance alias from positional `<instance>` or `--instance`.
+///
+/// If both are provided they must match; otherwise a usage error is returned.
 fn resolve_instance_alias(args: &GetArgs) -> Result<Option<&str>> {
     match (
         args.instance_positional.as_deref(),
@@ -515,6 +518,7 @@ fn resolve_instance_alias(args: &GetArgs) -> Result<Option<&str>> {
     }
 }
 
+/// Join parsed `--query` tokens back into a single provider query string.
 fn join_query_tokens(args: &GetArgs) -> Option<String> {
     args.query.as_ref().map(|tokens| tokens.join(" "))
 }
