@@ -153,3 +153,61 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ env.RELEASE_VERSION }}
         run: node .github/scripts/publish.js
+
+  publish-github-release-assets:
+    name: Publish GitHub Release assets
+    needs:
+      - publish-crates
+      - publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts/
+
+      - name: Package archives and compute checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_VERSION}"
+          OUTDIR="release-assets"
+          mkdir -p "${OUTDIR}"
+
+          package_zip() {
+            local target="$1" binary="$2"
+            zip -j "${OUTDIR}/99problems-${VERSION}-${target}.zip" \
+              "artifacts/binary-${target}/${binary}"
+          }
+
+          package_tar() {
+            local target="$1" binary="$2"
+            tar -czf "${OUTDIR}/99problems-${VERSION}-${target}.tar.gz" \
+              -C "artifacts/binary-${target}" "${binary}"
+          }
+
+          package_zip "x86_64-pc-windows-msvc"   "99problems.exe"
+          package_tar "x86_64-unknown-linux-gnu"  "99problems"
+          package_tar "x86_64-apple-darwin"       "99problems"
+          package_tar "aarch64-apple-darwin"       "99problems"
+          package_tar "aarch64-unknown-linux-gnu" "99problems"
+
+          cd "${OUTDIR}"
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${RELEASE_VERSION}" \
+            release-assets/99problems-${RELEASE_VERSION}-x86_64-pc-windows-msvc.zip \
+            release-assets/99problems-${RELEASE_VERSION}-x86_64-unknown-linux-gnu.tar.gz \
+            release-assets/99problems-${RELEASE_VERSION}-x86_64-apple-darwin.tar.gz \
+            release-assets/99problems-${RELEASE_VERSION}-aarch64-apple-darwin.tar.gz \
+            release-assets/99problems-${RELEASE_VERSION}-aarch64-unknown-linux-gnu.tar.gz \
+            release-assets/SHA256SUMS.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
