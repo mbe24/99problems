@@ -48,7 +48,7 @@ enum ErrorFormat {
     subcommand_required = true,
     arg_required_else_help = true,
     next_line_help = true,
-    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get -q \"repo:github/gitignore is:pr 2402\" --include-review-comments\n  99problems skill init\n  99problems man --output docs/man",
+    after_help = "Examples:\n  99problems get github --id 1842 --repo schemaorg/schemaorg\n  99problems get -q repo:github/gitignore is:pr 2402 --include-review-comments\n  99problems skill init\n  99problems man --output docs/man",
     version
 )]
 struct Cli {
@@ -163,6 +163,7 @@ mod tests {
             .expect("expected get subcommand to parse");
         match cli.command {
             Commands::Get(args) => {
+                assert_eq!(args.instance_positional.as_deref(), None);
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("1"));
             }
@@ -181,6 +182,7 @@ mod tests {
             .expect("expected got alias to parse");
         match cli.command {
             Commands::Get(args) => {
+                assert_eq!(args.instance_positional.as_deref(), None);
                 assert_eq!(args.repo.as_deref(), Some("owner/repo"));
                 assert_eq!(args.id.as_deref(), Some("2"));
             }
@@ -311,6 +313,58 @@ mod tests {
             | Commands::Config(_)
             | Commands::Completions { .. } => {
                 panic!("expected man command")
+            }
+        }
+    }
+
+    #[test]
+    fn parses_get_with_positional_instance_alias() {
+        let cli = Cli::try_parse_from(["99problems", "get", "jira", "-i", "25"])
+            .expect("expected positional instance alias to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(args.instance_positional.as_deref(), Some("jira"));
+                assert_eq!(args.instance.as_deref(), None);
+                assert_eq!(args.id.as_deref(), Some("25"));
+            }
+            Commands::Skill(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
+                panic!("expected get command")
+            }
+        }
+    }
+
+    #[test]
+    fn parses_get_query_as_unquoted_multi_token_value() {
+        let cli = Cli::try_parse_from([
+            "99problems",
+            "get",
+            "-q",
+            "is:issue",
+            "state:open",
+            "architectural",
+            "--no-comments",
+        ])
+        .expect("expected multi-token query to parse");
+        match cli.command {
+            Commands::Get(args) => {
+                assert_eq!(
+                    args.query,
+                    Some(vec![
+                        "is:issue".to_string(),
+                        "state:open".to_string(),
+                        "architectural".to_string()
+                    ])
+                );
+                assert!(args.no_comments);
+            }
+            Commands::Skill(_)
+            | Commands::Config(_)
+            | Commands::Completions { .. }
+            | Commands::Man(_) => {
+                panic!("expected get command")
             }
         }
     }

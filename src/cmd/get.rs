@@ -132,13 +132,17 @@ impl ResolvedOutputFormat {
 #[allow(clippy::struct_excessive_bools)]
 #[command(
     next_line_help = true,
-    after_help = "Examples:\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q \"repo:owner/repo state:open label:bug\" --output-mode stream --format jsonl"
+    after_help = "Examples:\n  99problems get jira -i CLOUD-12817\n  99problems get --repo schemaorg/schemaorg --id 1842\n  99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments\n  99problems get -q repo:owner/repo state:open label:bug --output-mode stream --format jsonl"
 )]
 pub(crate) struct GetArgs {
+    /// Named instance alias from .99problems ([instances.<alias>]) as first positional argument
+    #[arg(index = 1, value_name = "INSTANCE")]
+    pub(crate) instance_positional: Option<String>,
+
     /// Full search query (same syntax as the platform's web UI search bar)
     /// e.g. "state:closed Event repo:owner/repo"
-    #[arg(short = 'q', long)]
-    pub(crate) query: Option<String>,
+    #[arg(short = 'q', long, num_args = 1..)]
+    pub(crate) query: Option<Vec<String>>,
 
     /// Shorthand for adding "repo:owner/repo" to the query (alias: --project)
     #[arg(short = 'r', long, visible_alias = "project")]
@@ -425,8 +429,9 @@ fn default_platform_host(platform: &str) -> &'static str {
 }
 
 fn load_config_for_get(args: &GetArgs) -> Result<Config> {
+    let instance = resolve_instance_alias(args)?;
     if args.platform.is_none()
-        && args.instance.is_none()
+        && instance.is_none()
         && args.url.is_none()
         && args.deployment.is_none()
         && args.kind.is_none()
@@ -441,7 +446,7 @@ fn load_config_for_get(args: &GetArgs) -> Result<Config> {
 
     Config::load_with_options(ResolveOptions {
         platform: args.platform.as_ref().map(Platform::as_str),
-        instance: args.instance.as_deref(),
+        instance,
         url: args.url.as_deref(),
         kind: args.kind.as_ref().map(ContentType::as_str),
         deployment: args.deployment.as_ref().map(DeploymentType::as_str),
@@ -493,6 +498,25 @@ fn emit_get_warnings(cfg: &Config, args: &GetArgs) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+fn resolve_instance_alias(args: &GetArgs) -> Result<Option<&str>> {
+    match (
+        args.instance_positional.as_deref(),
+        args.instance.as_deref(),
+    ) {
+        (Some(positional), Some(flag)) if positional != flag => Err(AppError::usage(format!(
+            "Conflicting instance values: positional instance '{positional}' does not match --instance '{flag}'. Use either `99problems get <instance> ...` or `99problems get --instance <instance> ...`."
+        ))
+        .into()),
+        (Some(positional), _) => Ok(Some(positional)),
+        (None, Some(flag)) => Ok(Some(flag)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn join_query_tokens(args: &GetArgs) -> Option<String> {
+    args.query.as_ref().map(|tokens| tokens.join(" "))
 }
 
 fn build_source_for_platform(cfg: &Config, telemetry_active: bool) -> Result<Box<dyn Source>> {
@@ -558,7 +582,7 @@ fn build_fetch_request(cfg: &Config, args: &GetArgs) -> Result<FetchRequest> {
     }
 
     let query = Query::build(
-        args.query.clone(),
+        join_query_tokens(args),
         effective_kind,
         repo,
         state,
@@ -792,6 +816,7 @@ mod tests {
 
     fn args() -> GetArgs {
         GetArgs {
+            instance_positional: None,
             query: None,
             repo: Some("owner/repo".into()),
             state: None,
@@ -944,7 +969,7 @@ mod tests {
         args.id = None;
         args.no_body = true;
         args.repo = Some("CPQ".into());
-        args.query = Some("architectural".into());
+        args.query = Some(vec!["architectural".into()]);
         let req = build_fetch_request(&cfg, &args).unwrap();
         assert!(!req.include_body);
     }
@@ -994,5 +1019,44 @@ mod tests {
     fn trace_deployment_maps_selfhosted_to_dc() {
         let cfg = bitbucket_config("selfhosted", "pr", true);
         assert_eq!(trace_deployment_for_platform(&cfg), Some("dc"));
+    }
+
+    #[test]
+    fn resolve_instance_alias_uses_positional_value() {
+        let mut args = args();
+        args.instance_positional = Some("jira".into());
+        assert_eq!(resolve_instance_alias(&args).unwrap(), Some("jira"));
+    }
+
+    #[test]
+    fn resolve_instance_alias_allows_matching_positional_and_flag_values() {
+        let mut args = args();
+        args.instance_positional = Some("jira".into());
+        args.instance = Some("jira".into());
+        assert_eq!(resolve_instance_alias(&args).unwrap(), Some("jira"));
+    }
+
+    #[test]
+    fn resolve_instance_alias_rejects_conflicting_values() {
+        let mut args = args();
+        args.instance_positional = Some("jira".into());
+        args.instance = Some("gitlab".into());
+        let err = resolve_instance_alias(&args).unwrap_err().to_string();
+        assert!(err.contains("Conflicting instance values"));
+        assert!(err.contains("does not match"));
+    }
+
+    #[test]
+    fn join_query_tokens_combines_values_with_spaces() {
+        let mut args = args();
+        args.query = Some(vec![
+            "is:issue".into(),
+            "state:open".into(),
+            "architectural".into(),
+        ]);
+        assert_eq!(
+            join_query_tokens(&args).as_deref(),
+            Some("is:issue state:open architectural")
+        );
     }
 }

@@ -7,7 +7,7 @@ Fetch issue or pull-request conversations from configured providers.
 Search mode:
 
 ```bash
-99problems get -q "repo:owner/repo is:issue state:open"
+99problems get -q repo:owner/repo is:issue state:open
 ```
 
 ID mode:
@@ -16,14 +16,21 @@ ID mode:
 99problems get --repo owner/repo --id 1842 --type issue
 ```
 
+With positional instance alias:
+
+```bash
+99problems get jira -i CLOUD-12817
+```
+
 ## Core Inputs
 
-- `-q, --query`: raw provider query string.
+- `-q, --query`: raw provider query string (accepts multiple tokens until the next flag).
 - `-i, --id`: fetch one issue/PR directly.
 - `-r, --repo`: provider repo/project shorthand.
 - `-t, --type`: `issue` or `pr`.
 - `-p, --platform`: direct platform selection.
-- `-I, --instance`: select configured instance alias.
+- `<instance>`: optional positional configured instance alias.
+- `-I, --instance`: select configured instance alias (backward compatible with positional form).
 
 ## Query Shorthand Flags
 

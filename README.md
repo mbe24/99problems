@@ -75,10 +75,10 @@ Use this when you run `99problems` directly in a terminal to fetch context from 
 99problems get --repo github/gitignore --id 2402 --type pr --include-review-comments
 
 # Search GitLab issues
-99problems get --platform gitlab -q "repo:veloren/veloren is:issue state:closed terrain"
+99problems get --platform gitlab -q repo:veloren/veloren is:issue state:closed terrain
 
 # Fetch Jira issue by key
-99problems get --platform jira --id CLOUD-12817
+99problems get jira --id CLOUD-12817
 
 # Fetch Bitbucket Cloud PR by ID
 99problems get --platform bitbucket --deployment cloud --repo workspace/repo_slug --id 1 --type pr
@@ -87,13 +87,13 @@ Use this when you run `99problems` directly in a terminal to fetch context from 
 99problems get --platform bitbucket --deployment selfhosted --url https://bitbucket.mycompany.com --repo PROJECT/repo_slug --id 1
 
 # Stream as JSON Lines for pipelines
-99problems get -q "repo:github/gitignore is:issue state:open" --output-mode stream --format jsonl
+99problems get -q repo:github/gitignore is:issue state:open --output-mode stream --format jsonl
 ```
 
 ## Commands
 
 ```text
-99problems get [OPTIONS]               Fetch issue and pull request conversations
+99problems get [INSTANCE] [OPTIONS]    Fetch issue and pull request conversations
 99problems skill init [OPTIONS]        Scaffold the canonical Agent Skill
 99problems config <SUBCOMMAND>         Inspect and edit .99problems configuration
 99problems completions <SHELL>         Generate shell completion scripts
@@ -157,7 +157,7 @@ token = "pat_or_bearer_token"
 Bitbucket support is pull-request only; when `--type` is omitted, `99problems` defaults to PRs.
 For Bitbucket Cloud, use an app-password, repository access token, or workspace-level access token (premium feature) in `token`.
 
-Selection order: `--instance` -> single configured instance -> `default_instance`.
+Selection order: positional `INSTANCE`/`--instance` -> single configured instance -> `default_instance`.
 
 ### Telemetry
 
