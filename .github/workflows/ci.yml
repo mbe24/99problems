@@ -44,7 +44,7 @@ jobs:
     name: Integration (GitHub, blocking)
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ secrets.GITHUB_TOKEN != '' }}
+    if: ${{ secrets.GITHUB_TOKEN }}
     env:
       TOKEN_GITHUB: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -70,7 +70,7 @@ jobs:
     name: Integration (GitLab, blocking)
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ secrets.GITLAB_TOKEN != '' }}
+    if: ${{ secrets.GITLAB_TOKEN }}
     env:
       TOKEN_GITLAB: ${{ secrets.GITLAB_TOKEN }}
     steps:
@@ -97,7 +97,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     continue-on-error: true
-    if: ${{ secrets.JIRA_TOKEN != '' }}
+    if: ${{ secrets.JIRA_TOKEN }}
     env:
       TOKEN_JIRA: ${{ secrets.JIRA_TOKEN }}
     steps:
@@ -124,7 +124,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     continue-on-error: true
-    if: ${{ secrets.BITBUCKET_TOKEN != '' && secrets.BITBUCKET_REPO != '' && secrets.BITBUCKET_PR_ID != '' }}
+    if: ${{ secrets.BITBUCKET_TOKEN && secrets.BITBUCKET_REPO && secrets.BITBUCKET_PR_ID }}
     env:
       TOKEN_BITBUCKET: ${{ secrets.BITBUCKET_TOKEN }}
       BITBUCKET_REPO: ${{ secrets.BITBUCKET_REPO }}
