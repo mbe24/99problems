@@ -49,7 +49,7 @@ Use it to recover decisions, constraints, and related work items before proposin
 
 ### Fetch Jira Issue by Key
 ```bash
-99problems get --instance jira-work --id CPQ-19831 --type issue
+99problems get --instance jira-work --id CAM-19831 --type issue
 ```
 
 ### Fetch Bitbucket Pull Request by ID

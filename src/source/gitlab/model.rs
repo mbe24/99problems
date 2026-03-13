@@ -266,11 +266,11 @@ mod tests {
     fn map_related_issue_link_uses_external_string_id() {
         let issue = GitLabRelatedIssueRef {
             iid: None,
-            id: Some(serde_json::json!("CPQ-20376")),
+            id: Some(serde_json::json!("CAM-20376")),
             web_url: None,
         };
         let link = map_related_issue_link(&issue).expect("expected related link");
-        assert_eq!(link.id, "CPQ-20376");
+        assert_eq!(link.id, "CAM-20376");
         assert_eq!(link.relation, "relates");
         assert_eq!(link.kind.as_deref(), Some("issue"));
     }
@@ -279,7 +279,7 @@ mod tests {
     fn map_closes_related_issue_link_prefers_iid() {
         let issue = GitLabRelatedIssueRef {
             iid: Some(42),
-            id: Some(serde_json::json!("CPQ-20376")),
+            id: Some(serde_json::json!("CAM-20376")),
             web_url: None,
         };
         let link = map_closes_related_issue_link(&issue).expect("expected closes link");

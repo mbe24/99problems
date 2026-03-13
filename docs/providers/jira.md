@@ -8,7 +8,7 @@
 
 ## Required Values
 
-- `repo` is Jira project scope for search (for example `CPQ`).
+- `repo` is Jira project scope for search (for example `CAM`).
 - Token env var: `JIRA_TOKEN`
 - Optional account email env var: `JIRA_ACCOUNT_EMAIL`
 
@@ -17,13 +17,13 @@
 Search issues in one project:
 
 ```bash
-99problems get --platform jira --repo CPQ -q "architectural redesign" --type issue
+99problems get --platform jira --repo CAM -q "architectural redesign" --type issue
 ```
 
 Fetch issue by key:
 
 ```bash
-99problems get --platform jira --id CPQ-19831 --type issue
+99problems get --platform jira --id CAM-19831 --type issue
 ```
 
 ## Notes

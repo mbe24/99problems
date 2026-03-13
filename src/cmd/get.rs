@@ -943,7 +943,7 @@ mod tests {
         let mut args = args();
         args.id = None;
         args.no_body = true;
-        args.repo = Some("CPQ".into());
+        args.repo = Some("CAM".into());
         args.query = Some("architectural".into());
         let req = build_fetch_request(&cfg, &args).unwrap();
         assert!(!req.include_body);

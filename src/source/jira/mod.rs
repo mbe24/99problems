@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn search_query_params_include_description_when_body_enabled() {
-        let params = search_query_params("project = \"CPQ\"", 50, 0, None, true, true);
+        let params = search_query_params("project = \"CAM\"", 50, 0, None, true, true);
         let fields = params
             .iter()
             .find_map(|(k, v)| (k == "fields").then_some(v.as_str()))
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn search_query_params_omit_description_when_body_disabled() {
-        let params = search_query_params("project = \"CPQ\"", 50, 0, None, false, false);
+        let params = search_query_params("project = \"CAM\"", 50, 0, None, false, false);
         let fields = params
             .iter()
             .find_map(|(k, v)| (k == "fields").then_some(v.as_str()))

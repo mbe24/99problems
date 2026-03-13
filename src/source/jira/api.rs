@@ -661,15 +661,15 @@ mod tests {
 
     #[test]
     fn canonical_jira_key_validator_accepts_expected_keys() {
-        assert!(is_canonical_jira_issue_key("CPQ-20376"));
+        assert!(is_canonical_jira_issue_key("CAM-20376"));
         assert!(is_canonical_jira_issue_key("PLM_2-12456"));
     }
 
     #[test]
     fn canonical_jira_key_validator_rejects_noncanonical_keys() {
-        assert!(!is_canonical_jira_issue_key("cpq-20376"));
+        assert!(!is_canonical_jira_issue_key("cam-20376"));
         assert!(!is_canonical_jira_issue_key("20376"));
-        assert!(!is_canonical_jira_issue_key("CPQ-"));
+        assert!(!is_canonical_jira_issue_key("CAM-"));
         assert!(!is_canonical_jira_issue_key("-20376"));
     }
 }

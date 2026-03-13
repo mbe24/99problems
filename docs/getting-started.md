@@ -25,7 +25,7 @@ Search GitLab issues:
 Fetch Jira issue by key:
 
 ```bash
-99problems get --platform jira --id CPQ-19831 --type issue
+99problems get --platform jira --id CAM-19831 --type issue
 ```
 
 Fetch Bitbucket Cloud PR by ID:
