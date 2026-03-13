@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
-  <rect width="120" height="120" rx="24" fill="#6D28D9"/>
+  <rect width="40" height="40" rx="8" fill="#6D28D9"/>
   <text
-    x="60"
-    y="82"
+    x="19"
+    y="29"
     font-family="'Segoe UI', Arial, sans-serif"
-    font-size="68"
-    font-weight="800"
+    font-size="24"
+    font-weight="500"
     text-anchor="middle"
     fill="#FFFFFF"
-    letter-spacing="-3">9P</text>
+    letter-spacing="-2">9P</text>
 </svg>

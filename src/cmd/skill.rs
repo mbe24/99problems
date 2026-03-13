@@ -21,6 +21,11 @@ const SKILL_MD: &str = include_str!("../../templates/skills/99problems/SKILL.md"
 const REFERENCE_MD: &str =
     include_str!("../../templates/skills/99problems/references/REFERENCE.md");
 const FORMS_MD: &str = include_str!("../../templates/skills/99problems/references/FORMS.md");
+const OPENAI_YAML: &str = include_str!("../../templates/skills/99problems/agents/openai.yaml");
+const LOGO_SMALL_SVG: &str =
+    include_str!("../../templates/skills/99problems/assets/logo-small.svg");
+const LOGO_LARGE_SVG: &str =
+    include_str!("../../templates/skills/99problems/assets/logo-large.svg");
 
 #[derive(Args, Debug)]
 pub(crate) struct SkillArgs {
@@ -80,11 +85,21 @@ fn init_skill(args: &SkillInitArgs) -> Result<()> {
     let references_dir = target_dir.join("references");
     let reference_file = references_dir.join("REFERENCE.md");
     let forms_file = references_dir.join("FORMS.md");
+    let agents_dir = target_dir.join("agents");
+    let openai_file = agents_dir.join("openai.yaml");
+    let assets_dir = target_dir.join("assets");
+    let logo_small_file = assets_dir.join("logo-small.svg");
+    let logo_large_file = assets_dir.join("logo-large.svg");
 
     fs::create_dir_all(&references_dir)?;
+    fs::create_dir_all(&agents_dir)?;
+    fs::create_dir_all(&assets_dir)?;
     write_file(&skill_file, SKILL_MD)?;
     write_file(&reference_file, REFERENCE_MD)?;
     write_file(&forms_file, FORMS_MD)?;
+    write_file(&openai_file, OPENAI_YAML)?;
+    write_file(&logo_small_file, LOGO_SMALL_SVG)?;
+    write_file(&logo_large_file, LOGO_LARGE_SVG)?;
 
     let line_count = SKILL_MD.lines().count();
     if line_count > MAX_SKILL_LINES {
@@ -246,6 +261,9 @@ mod tests {
         assert!(base.join("SKILL.md").exists());
         assert!(base.join("references").join("REFERENCE.md").exists());
         assert!(base.join("references").join("FORMS.md").exists());
+        assert!(base.join("agents").join("openai.yaml").exists());
+        assert!(base.join("assets").join("logo-small.svg").exists());
+        assert!(base.join("assets").join("logo-large.svg").exists());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -275,9 +293,17 @@ mod tests {
         let base = root.join(SKILL_NAME);
         let refs = base.join("references");
         fs::create_dir_all(&refs).expect("expected references directory");
+        fs::create_dir_all(base.join("agents")).expect("expected agents directory");
+        fs::create_dir_all(base.join("assets")).expect("expected assets directory");
         fs::write(base.join("SKILL.md"), "old").expect("expected old skill write");
         fs::write(refs.join("REFERENCE.md"), "old").expect("expected old reference write");
         fs::write(refs.join("FORMS.md"), "old").expect("expected old forms write");
+        fs::write(base.join("agents").join("openai.yaml"), "old")
+            .expect("expected old openai write");
+        fs::write(base.join("assets").join("logo-small.svg"), "old")
+            .expect("expected old small logo write");
+        fs::write(base.join("assets").join("logo-large.svg"), "old")
+            .expect("expected old large logo write");
         fs::write(base.join("custom.txt"), "keep").expect("expected custom file write");
 
         let args = SkillArgs {
@@ -291,6 +317,21 @@ mod tests {
         assert_eq!(
             fs::read_to_string(base.join("SKILL.md")).expect("expected skill read"),
             SKILL_MD
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("agents").join("openai.yaml"))
+                .expect("expected openai read"),
+            OPENAI_YAML
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("assets").join("logo-small.svg"))
+                .expect("expected small logo read"),
+            LOGO_SMALL_SVG
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("assets").join("logo-large.svg"))
+                .expect("expected large logo read"),
+            LOGO_LARGE_SVG
         );
         assert_eq!(
             fs::read_to_string(base.join("custom.txt")).expect("expected custom file read"),
@@ -311,9 +352,27 @@ mod tests {
         let forms =
             fs::read_to_string(root.join("templates/skills/99problems/references/FORMS.md"))
                 .expect("expected canonical FORMS.md");
+        let openai =
+            fs::read_to_string(root.join("templates/skills/99problems/agents/openai.yaml"))
+                .expect("expected canonical openai.yaml");
+        let logo_small =
+            fs::read_to_string(root.join("templates/skills/99problems/assets/logo-small.svg"))
+                .expect("expected canonical logo-small.svg");
+        let logo_large =
+            fs::read_to_string(root.join("templates/skills/99problems/assets/logo-large.svg"))
+                .expect("expected canonical logo-large.svg");
 
         assert_eq!(normalize_lines(&skill), normalize_lines(SKILL_MD));
         assert_eq!(normalize_lines(&reference), normalize_lines(REFERENCE_MD));
         assert_eq!(normalize_lines(&forms), normalize_lines(FORMS_MD));
+        assert_eq!(normalize_lines(&openai), normalize_lines(OPENAI_YAML));
+        assert_eq!(
+            normalize_lines(&logo_small),
+            normalize_lines(LOGO_SMALL_SVG)
+        );
+        assert_eq!(
+            normalize_lines(&logo_large),
+            normalize_lines(LOGO_LARGE_SVG)
+        );
     }
 }

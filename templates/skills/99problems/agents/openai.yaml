@@ -1,0 +1,10 @@
+interface:
+  display_name: "99problems"
+  short_description: "Retrieve historical issue and pull request context for current engineering tasks."
+  icon_small: "./assets/logo-small.svg"
+  icon_large: "./assets/logo-large.svg"
+  brand_color: "#6D28D9"
+  default_prompt: "Find related issues and PRs for topic \"<topic>\" and summarize constraints, decisions, and open risks."
+
+policy:
+  allow_implicit_invocation: true
